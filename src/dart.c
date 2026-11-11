@@ -1370,6 +1370,13 @@ u64 dart_find_iova(dart_dev_t *dart, s64 start, size_t len)
     return DART_PTR_ERR;
 }
 
+/* Software ownership only; no hardware register access. */
+bool dart_managed_t8110(dart_dev_t *dart, uintptr_t regs, u8 sid)
+{
+    return dart && dart->type == DART_T8110 && dart->regs == regs && dart->device == sid &&
+           !dart->locked && !dart->keep && !dart->legacy_mutable;
+}
+
 void dart_shutdown(dart_dev_t *dart)
 {
     if (dart->locked || dart->keep) {

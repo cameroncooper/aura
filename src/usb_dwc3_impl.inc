@@ -1974,10 +1974,16 @@ error:
     return NULL;
 }
 
-void usb_dwc3_shutdown(dwc3_dev_t *dev)
+bool usb_dwc3_managed_usb2(dwc3_dev_t *dev, uintptr_t regs, uintptr_t dart, u8 sid)
+{
+    return dev && dev->regs == regs && !dev->dma_unsafe &&
+           dart_managed_t8110(dev->dart, dart, sid);
+}
+
+int usb_dwc3_shutdown_checked(dwc3_dev_t *dev)
 {
     if (!dev)
-        return;
+        return 0;
     for (int i = 0; i < CDC_ACM_PIPE_MAX; i++)
         dev->pipe[i].ready = false;
 
@@ -2005,8 +2011,11 @@ void usb_dwc3_shutdown(dwc3_dev_t *dev)
     clear32(dev->regs + DWC3_DCTL, DWC3_DCTL_RUN_STOP);
 
     /* wait until the controller is shut down */
-    if (poll32(dev->regs + DWC3_DSTS, DWC3_DSTS_DEVCTRLHLT, DWC3_DSTS_DEVCTRLHLT, 1000))
-        usb_debug_printf("timeout while waiting for DWC3_DSTS_DEVCTRLHLT during shutdown.\n");
+    if (poll32(dev->regs + DWC3_DSTS, DWC3_DSTS_DEVCTRLHLT, DWC3_DSTS_DEVCTRLHLT, 1000)) {
+        dev->dma_unsafe = true;
+        usb_debug_printf("timeout while waiting for DWC3_DSTS_DEVCTRLHLT during shutdown; retaining DMA\n");
+        return -1;
+    }
 
     /* reset the device side of the controller just to be safe */
     set32(dev->regs + DWC3_DCTL, DWC3_DCTL_CSFTRST);
@@ -2014,8 +2023,13 @@ void usb_dwc3_shutdown(dwc3_dev_t *dev)
         dev->dma_unsafe = true;
         usb_debug_printf("controller reset failed during shutdown; preserving DMA mappings\n");
     }
-    if (dev->dma_unsafe)
-        return;
+    if (dev->dma_unsafe || read32(dev->regs + DWC3_DEVTEN) ||
+        read32(dev->regs + DWC3_DALEPENA) ||
+        (read32(dev->regs + DWC3_DCTL) & (DWC3_DCTL_RUN_STOP | DWC3_DCTL_CSFTRST)) ||
+        !(read32(dev->regs + DWC3_DSTS) & DWC3_DSTS_DEVCTRLHLT)) {
+        dev->dma_unsafe = true;
+        return -1;
+    }
 
     /* unmap and free dma buffers */
     dart_unmap(dev->dart, TRB_BUFFER_IOVA, TRB_BUFFER_SIZE);
@@ -2035,6 +2049,12 @@ void usb_dwc3_shutdown(dwc3_dev_t *dev)
     if (dev->dart)
         dart_shutdown(dev->dart);
     free(dev);
+    return 0;
+}
+
+void usb_dwc3_shutdown(dwc3_dev_t *dev)
+{
+    (void)usb_dwc3_shutdown_checked(dev);
 }
 
 u8 usb_dwc3_getbyte(dwc3_dev_t *dev, cdc_acm_pipe_id_t pipe)

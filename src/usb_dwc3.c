@@ -28,6 +28,10 @@ size_t usb_dwc3_ss_write(dwc3_ss_dev_t *dev, cdc_acm_pipe_id_t pipe, const void 
 size_t usb_dwc3_ss_queue(dwc3_ss_dev_t *dev, cdc_acm_pipe_id_t pipe, const void *buf, size_t count);
 void usb_dwc3_ss_flush(dwc3_ss_dev_t *dev, cdc_acm_pipe_id_t pipe);
 
+int usb_dwc3_hs_shutdown_checked(dwc3_hs_dev_t *dev);
+int usb_dwc3_ss_shutdown_checked(dwc3_ss_dev_t *dev);
+bool usb_dwc3_hs_managed_usb2(dwc3_hs_dev_t *dev, uintptr_t regs, uintptr_t dart, u8 sid);
+
 struct dwc3_dev {
     bool superspeed;
     union {
@@ -60,15 +64,27 @@ dwc3_dev_t *usb_dwc3_init(uintptr_t regs, dart_dev_t *dart)
     return usb_dwc3_init_mode(regs, dart, false);
 }
 
-void usb_dwc3_shutdown(dwc3_dev_t *dev)
+bool usb_dwc3_managed_usb2(dwc3_dev_t *dev, uintptr_t regs, uintptr_t dart, u8 sid)
+{
+    return dev && !dev->superspeed &&
+           usb_dwc3_hs_managed_usb2(dev->engine.hs, regs, dart, sid);
+}
+
+int usb_dwc3_shutdown_checked(dwc3_dev_t *dev)
 {
     if (!dev)
-        return;
-    if (dev->superspeed)
-        usb_dwc3_ss_shutdown(dev->engine.ss);
-    else
-        usb_dwc3_hs_shutdown(dev->engine.hs);
+        return 0;
+    int ret = dev->superspeed ? usb_dwc3_ss_shutdown_checked(dev->engine.ss)
+                             : usb_dwc3_hs_shutdown_checked(dev->engine.hs);
+    if (ret)
+        return ret; /* The engine still owns DMA; keep its handle too. */
     free(dev);
+    return 0;
+}
+
+void usb_dwc3_shutdown(dwc3_dev_t *dev)
+{
+    (void)usb_dwc3_shutdown_checked(dev);
 }
 
 void usb_dwc3_handle_events(dwc3_dev_t *dev)

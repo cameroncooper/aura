@@ -13,4 +13,6 @@
 #define usb_dwc3_write         usb_dwc3_ss_write
 #define usb_dwc3_queue         usb_dwc3_ss_queue
 #define usb_dwc3_flush         usb_dwc3_ss_flush
+#define usb_dwc3_shutdown_checked usb_dwc3_ss_shutdown_checked
+#define usb_dwc3_managed_usb2 usb_dwc3_ss_managed_usb2
 #include "usb_dwc3_impl.inc"
