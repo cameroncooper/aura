@@ -289,6 +289,21 @@ void run_actions(void)
     }
 #endif
 
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2) && !defined(BRINGUP)
+    /* Local J716c proxy diagnostic. Keep the existing USB2 admission checks. */
+    if (chip_id == T6050 && !stage1_chained && !stage1_config_target() &&
+        !aura_debug_enabled() && usb_cdc_deferred_usb2()) {
+        u32 model_len = 0;
+        const char *model = adt_getprop(adt, 0, "model", &model_len);
+        if (model && model_len == sizeof("Mac17,6") && !memcmp(model, "Mac17,6", model_len)) {
+            if (usb_cdc_schedule(2000, 0, 0))
+                printf("J716c: USB2 proxy setup refused\n");
+            else
+                printf("J716c: USB2 proxy setup scheduled\n");
+        }
+    }
+#endif
+
     printf("Running proxy...\n");
 
     uartproxy_run(NULL);
