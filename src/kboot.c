@@ -77,6 +77,9 @@ extern const char *const aura_version;
 extern u64 relocated_from;
 
 int dt_set_gpu(void *dt);
+#ifdef ESP_STAGE2
+int dt_set_gpu_j716c(void *dt);
+#endif
 int dt_set_display_handoff(void *dt);
 
 u64 kboot_ram_base(void)
@@ -10154,7 +10157,14 @@ int kboot_prepare_dt(void *fdt)
     if (chip_id == T6040 || chip_id == T6041)
         set32(0x50282c040, BIT(31));
 
-    if (dt_set_gpu(dt))
+    int gpu_ret;
+#ifdef ESP_STAGE2
+    if (!fdt_node_check_compatible(dt, 0, "apple,j716c"))
+        gpu_ret = dt_set_gpu_j716c(dt);
+    else
+#endif
+        gpu_ret = dt_set_gpu(dt);
+    if (gpu_ret)
         return -1;
     if (dt_set_multitouch())
         return -1;

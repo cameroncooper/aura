@@ -137,6 +137,7 @@ SECTIONS {
         *hv/hv_wdt.o(.text .text.*)
         /* Run-once OS preparation also fits in this slot. */
         *kboot.o(.text .text.*)
+        *kboot_gpu_j716c.o(.text .text.*)
     } :text
     .text : ALIGN(0x10000) {
         *(.text)

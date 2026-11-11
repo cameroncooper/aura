@@ -232,6 +232,10 @@ OBJECTS := \
 	$(HV_OBJECTS) \
 	$(MINILZLIB_OBJECTS) $(TINF_OBJECTS) $(DLMALLOC_OBJECTS) $(LIBFDT_OBJECTS)
 
+ifeq ($(ESP_STAGE2),1)
+OBJECTS += kboot_gpu_j716c.o
+endif
+
 FP_OBJECTS := \
 	kboot_gpu.o kboot_gpu_t8152.o kboot_gpu_m4.o \
 	math/expf.o \
@@ -288,7 +292,7 @@ $(BUILD_FP_OBJS): build/%.o: src/%.c
 # leaves room in .init for more of the guest-only objects.
 build/sptm_virt_cl4.o: CFLAGS += -Oz
 # Run-once OS handoff code: -Oz keeps .text within its 64 KiB steps (see _file_limit).
-build/kboot.o: CFLAGS += -Oz
+build/kboot.o build/kboot_gpu_j716c.o: CFLAGS += -Oz
 
 build/%.o: src/%.c build-tag build-cfg
 	$(QUIET)echo "  CC    $@"
