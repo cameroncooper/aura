@@ -4,7 +4,9 @@
 #include "assert.h"
 #include "exception.h"
 #include "iodev.h"
+#include "j716c_recovery.h"
 #include "proxy.h"
+#include "stage1_config.h"
 #include "string.h"
 #include "types.h"
 #include "usb.h"
@@ -112,8 +114,11 @@ enum stage1_proxy_result uartproxy_wait_stage1(unsigned int timeout_ms)
     struct stage1_proxy_window window;
     stage1_proxy_window_init(&window, timeout_ms);
     bool schedule_failed = false;
+    bool j716c = stage1_config_target() && j716c_recovery_board();
     if (chip_id == T8140) {
         schedule_failed = usb_cdc_schedule(1000, 0, BIT(1) | BIT(2));
+    } else if (j716c) {
+        schedule_failed = usb_cdc_schedule(2000, 0, 0);
     } else {
         usb_init();
         usb_iodev_init();
@@ -147,8 +152,8 @@ enum stage1_proxy_result uartproxy_wait_stage1(unsigned int timeout_ms)
         bool kis_sync = serial_port != IODEV_MAX;
         enum stage1_proxy_result result = stage1_proxy_window_step(
             &window, elapsed > 0xffffffffu ? 0xffffffffu : elapsed,
-            chip_id != T8140 || usb_cdc_ready(), schedule_failed || usb_cdc_failed(), carrier_owned,
-            cdc_sync, kis_sync);
+            (chip_id != T8140 && !j716c) || usb_cdc_ready(), schedule_failed || usb_cdc_failed(),
+            carrier_owned, cdc_sync, kis_sync);
 
         if (result == STAGE1_PROXY_CDC) {
             presynced_iodev = usb_port;
@@ -156,7 +161,7 @@ enum stage1_proxy_result uartproxy_wait_stage1(unsigned int timeout_ms)
             return result;
         }
         if (result == STAGE1_PROXY_KIS) {
-            if (chip_id == T8140 && !schedule_failed && usb_cdc_cancel())
+            if ((chip_id == T8140 || j716c) && !schedule_failed && usb_cdc_cancel())
                 return STAGE1_PROXY_CDC_FAILED;
             presynced_iodev = serial_port;
             wdt_host_attached();

@@ -17,6 +17,7 @@
 #include "firmware.h"
 #include "gxf.h"
 #include "heapblock.h"
+#include "j716c_recovery.h"
 #include "j873.h"
 #include "mcc.h"
 #include "memory.h"
@@ -80,6 +81,22 @@ void get_device_info(void)
 /* Stage 1 runs at most one proxy window per boot: from its config or an aura-proxy request. */
 static bool stage1_window_done;
 static enum stage1_proxy_result stage1_window_result = STAGE1_PROXY_TIMEOUT;
+
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+static bool j716c_stage1_guard_failed;
+
+static bool j716c_stage1_target(void)
+{
+    return chip_id == T6050 && stage1_config_target();
+}
+
+static int j716c_stage1_arm(void)
+{
+    if (!j716c_recovery_board())
+        return -1;
+    return aura_trial_enabled() ? wdt_arm_trial() : wdt_arm_boot();
+}
+#endif
 
 static void stage1_run_host_proxy(void)
 {
@@ -190,7 +207,7 @@ void run_actions(void)
         printf("aura-proxy: waiting %u s for a host\n", STAGE1_PROXY_REQUEST_MS / 1000);
         window_ms = STAGE1_PROXY_REQUEST_MS;
     }
-    if (window_ms) {
+    if (window_ms && !stage1_window_done) {
         window_result = stage1_window_result = uartproxy_wait_stage1(window_ms);
         stage1_window_done = true;
         if (window_result == STAGE1_PROXY_CDC || window_result == STAGE1_PROXY_KIS) {
@@ -246,7 +263,12 @@ void run_actions(void)
 
     printf("Checking for payloads...\n");
 
-    bool payload_valid = payload_run() == 0;
+    bool payload_valid = false;
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+    if (!(j716c_stage1_target() &&
+          (j716c_stage1_guard_failed || stage1_window_result == STAGE1_PROXY_CDC_FAILED)))
+#endif
+        payload_valid = payload_run() == 0;
     payload_action = stage1_proxy_payload_action(stage1_window_result, payload_valid,
                                                  usb_cdc_ready(), !usb_cdc_owns_carrier());
     if (payload_action == STAGE1_PAYLOAD_NATIVE) {
@@ -276,7 +298,7 @@ void run_actions(void)
                "system.\n");
     if (stage1_config_target() && wdt_boot_watchdog_armed())
         printf("  Without a host, this Mac restarts by itself within %u s to try again.\n",
-               WDT_BOOT_SECONDS);
+               wdt_timeout_seconds());
 
     if (payload_action == STAGE1_PAYLOAD_HALT)
         panic("Stage 1: no safe proxy carrier after CDC failure\n");
@@ -291,11 +313,13 @@ void run_actions(void)
 
 #if defined(CHAINLOADING) && !defined(ESP_STAGE2) && !defined(BRINGUP)
     /* Local J716c proxy diagnostic. Keep the existing USB2 admission checks. */
-    if (chip_id == T6050 && !stage1_chained && !stage1_config_target() &&
-        !aura_debug_enabled() && usb_cdc_deferred_usb2()) {
+    if (chip_id == T6050 && !stage1_chained && !aura_debug_enabled() && usb_cdc_deferred_usb2() &&
+        !usb_cdc_ready() && !usb_cdc_owns_carrier() &&
+        (!stage1_config_target() || !stage1_window_done)) {
         u32 model_len = 0;
         const char *model = adt_getprop(adt, 0, "model", &model_len);
-        if (model && model_len == sizeof("Mac17,6") && !memcmp(model, "Mac17,6", model_len)) {
+        if (model && model_len == sizeof("Mac17,6") && !memcmp(model, "Mac17,6", model_len) &&
+            (!stage1_config_target() || j716c_recovery_board())) {
             if (usb_cdc_schedule(2000, 0, 0))
                 printf("J716c: USB2 proxy setup refused\n");
             else
@@ -382,15 +406,25 @@ void aura_main(void)
     aic_init();
     smp_init();
 #endif
-    wdt_disable();
-    if (aura_trial_enabled() && wdt_arm_trial())
-        printf("WDT: could not arm the trial watchdog\n");
 #if defined(CHAINLOADING) && !defined(ESP_STAGE2)
-    else if (!aura_trial_enabled() && wdt_arm_boot())
-        printf("WDT: could not arm the boot watchdog\n");
-    else if (!aura_trial_enabled())
-        printf("WDT: boot watchdog armed (%u s)\n", WDT_BOOT_SECONDS);
+    if (j716c_stage1_target()) {
+        j716c_stage1_guard_failed = j716c_stage1_arm() != 0;
+        printf("Stage 1: J716c disk watchdog %s (%u s)\n",
+               j716c_stage1_guard_failed ? "REFUSED; disk boot blocked" : "verified",
+               wdt_timeout_seconds());
+    } else
 #endif
+    {
+        wdt_disable();
+        if (aura_trial_enabled() && wdt_arm_trial())
+            printf("WDT: could not arm the trial watchdog\n");
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+        else if (!aura_trial_enabled() && wdt_arm_boot())
+            printf("WDT: could not arm the boot watchdog\n");
+        else if (!aura_trial_enabled())
+            printf("WDT: boot watchdog armed (%u s)\n", WDT_BOOT_SECONDS);
+#endif
+    }
 #ifndef BRINGUP
     if (pmgr_init() && chip_id == T8140)
         panic("T8140 PMGR initialization failed\n");
@@ -438,10 +472,27 @@ next_stage:
         panic("Refusing next stage while secondary callbacks are pending\n");
     }
 
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+    if (j716c_stage1_target() && j716c_stage1_arm()) {
+        printf("Stage 1: J716c final watchdog refused; handoff blocked\n");
+        j716c_stage1_guard_failed = true;
+        next_stage.entry = NULL;
+        run_actions();
+        goto next_stage;
+    }
+#endif
     printf("Preparing to run next stage at %p...\n", next_stage.entry);
 
     if (!nvme_shutdown()) {
         printf("NVMe handoff failed; returning to proxy\n");
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+        if (j716c_stage1_target()) {
+            j716c_stage1_guard_failed = true;
+            next_stage.entry = NULL;
+            run_actions();
+            goto next_stage;
+        }
+#endif
         uartproxy_run(NULL);
         panic("NVMe handoff failed\n");
     }
@@ -452,6 +503,10 @@ next_stage:
         usb_iodev_shutdown();
         /* Its firmware may still use memory the next stage will reuse. */
         if (display_shutdown(DCP_SLEEP_IF_EXTERNAL) < 0) {
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+            if (j716c_stage1_target())
+                panic("Stage 1: J716c display handoff failed after teardown; refusing vector\n");
+#endif
             printf("Display handoff failed; returning to proxy\n");
             uartproxy_run(NULL);
             panic("Display handoff failed\n");
@@ -464,7 +519,11 @@ next_stage:
 #endif
 
     /* Give the next stage of a trial boot the whole watchdog period. */
-    if (aura_trial_enabled() && wdt_arm_trial())
+    if (aura_trial_enabled()
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+        && !j716c_stage1_target()
+#endif
+        && wdt_arm_trial())
         printf("WDT: could not arm the trial watchdog\n");
     printf("Vectoring to next stage...\n");
 #if defined(CHAINLOADING) && !defined(ESP_STAGE2)

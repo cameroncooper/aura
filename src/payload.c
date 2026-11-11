@@ -13,6 +13,7 @@
 #include "display.h"
 #include "firmware.h"
 #include "heapblock.h"
+#include "j716c_recovery.h"
 #include "kboot.h"
 #include "mitigations.h"
 #include "nvme.h"
@@ -20,6 +21,7 @@
 #include "smp.h"
 #include "stage1_config.h"
 #include "utils.h"
+#include "wdt.h"
 
 #include "libfdt/libfdt.h"
 #include "minilzlib/minlzma.h"
@@ -455,6 +457,17 @@ int payload_run(void)
     if (!stage1_config_applied) {
         const char *target = stage1_config_target();
         if (target) {
+            if (chip_id == T6050) {
+                size_t capacity = cur_boot_args.revision == 1   ? CMDLINE_LENGTH_RV1
+                                  : cur_boot_args.revision == 2 ? CMDLINE_LENGTH_RV2
+                                                                : CMDLINE_LENGTH_RV3;
+                if (!j716c_recovery_board() || !wdt_timeout_seconds() ||
+                    (!boot_option_present(cur_boot_args.rv3.cmdline, capacity, "j716c.wdt=keep") &&
+                     !boot_options_append(cur_boot_args.rv3.cmdline, capacity, "j716c.wdt=keep"))) {
+                    printf("Stage 1: J716c watchdog handoff unavailable; disk boot blocked\n");
+                    return -1;
+                }
+            }
             if (chainload_spec && strcmp(chainload_spec, target)) {
                 printf("Payload: embedded and appended chainload targets differ\n");
                 return -1;

@@ -1,7 +1,12 @@
 /* SPDX-License-Identifier: MIT AND GPL-2.0-only */
 
+#include "../build/build_cfg.h"
+
 #include "wdt.h"
 #include "adt.h"
+#include "exception.h"
+#include "j716c_recovery.h"
+#include "stage1_config.h"
 #include "types.h"
 #include "utils.h"
 
@@ -10,6 +15,50 @@
 #define WDT_CTL   0x1c
 
 static u64 wdt_base = 0;
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+static unsigned wdt_armed_seconds;
+static int wdt_arm_j716c(unsigned seconds)
+{
+    wdt_armed_seconds = 0;
+    int path[8];
+    int node = adt_path_offset_trace(adt, "/arm-io/wdt", path);
+    u64 primary, primary_size, secondary, secondary_size;
+    u32 version;
+    if (!j716c_recovery_board() || seconds < 1 || seconds > 160 || node < 0 ||
+        ADT_GETPROP(adt, node, "wdt-version", &version) != sizeof(version) || version != 3 ||
+        adt_get_reg(adt, path, "reg", 0, &primary, &primary_size) || primary != 0x28836c000ULL ||
+        primary_size != 0x4000 || adt_get_reg(adt, path, "reg", 2, &secondary, &secondary_size) ||
+        secondary != 0x288330008ULL || secondary_size != 4)
+        return -1;
+
+    int before = exc_count;
+    exc_guard = GUARD_MARK | GUARD_SILENT;
+    u32 control = read32(primary + WDT_CTL);
+    u32 reset = read32(secondary);
+    exc_guard = GUARD_OFF;
+    if (exc_count != before || (control != 0 && control != 4) || reset)
+        return -1;
+
+    /* The root-qualified WD1 sequence; retain an already active lease throughout. */
+    u32 ticks = seconds * 24000000u;
+    before = exc_count;
+    exc_guard = GUARD_MARK | GUARD_SILENT;
+    write32(primary + WDT_ALARM, ticks);
+    write32(primary + WDT_COUNT, 0);
+    write32(primary + WDT_CTL, 4);
+    sysop("dsb sy");
+    u32 alarm = read32(primary + WDT_ALARM);
+    control = read32(primary + WDT_CTL);
+    u32 count = read32(primary + WDT_COUNT);
+    exc_guard = GUARD_OFF;
+    if (exc_count != before || alarm != ticks || control != 4 || count >= alarm || count > 24000000)
+        return -1;
+
+    wdt_base = primary;
+    wdt_armed_seconds = seconds;
+    return 0;
+}
+#endif
 
 void wdt_disable(void)
 {
@@ -68,6 +117,10 @@ void wdt_reboot(void)
 
 static int wdt_arm(unsigned seconds)
 {
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+    if (stage1_config_target() && j716c_recovery_board())
+        return wdt_arm_j716c(seconds);
+#endif
     int path[8];
     int node = adt_path_offset_trace(adt, "/arm-io/wdt", path);
     u64 primary, primary_size, secondary, secondary_size;
@@ -93,6 +146,10 @@ static int wdt_arm(unsigned seconds)
 
 int wdt_arm_seconds(unsigned seconds)
 {
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+    if (stage1_config_target() && j716c_recovery_board())
+        return wdt_arm_j716c(seconds);
+#endif
     if (chip_id != T8140 && chip_id != T6040)
         return -1;
     return wdt_arm(seconds);
@@ -109,6 +166,10 @@ static bool wdt_boot_armed;
 int wdt_arm_trial(void)
 {
     wdt_boot_armed = false;
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+    if (stage1_config_target() && j716c_recovery_board())
+        return wdt_arm_j716c(160);
+#endif
     wdt_disable();
     return wdt_arm(WDT_TRIAL_SECONDS);
 }
@@ -124,7 +185,14 @@ int wdt_arm_trial(void)
  */
 int wdt_arm_boot(void)
 {
-    if (wdt_arm(WDT_BOOT_SECONDS))
+    unsigned seconds = WDT_BOOT_SECONDS;
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+    if (stage1_config_target() && j716c_recovery_board()) {
+        seconds = 160;
+        wdt_boot_armed = false;
+    }
+#endif
+    if (wdt_arm(seconds))
         return -1;
     wdt_boot_armed = true;
     return 0;
@@ -133,6 +201,15 @@ int wdt_arm_boot(void)
 bool wdt_boot_watchdog_armed(void)
 {
     return wdt_boot_armed;
+}
+
+unsigned wdt_timeout_seconds(void)
+{
+#if defined(CHAINLOADING) && !defined(ESP_STAGE2)
+    if (stage1_config_target() && j716c_recovery_board())
+        return wdt_armed_seconds;
+#endif
+    return WDT_BOOT_SECONDS;
 }
 
 /* Only the boot watchdog: a trial's or a host-armed one is not ours to disarm. */
