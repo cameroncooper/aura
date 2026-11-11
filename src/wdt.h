@@ -6,6 +6,8 @@
 #include "types.h"
 
 void wdt_disable(void);
+/* ESP Stage 2 only: 1 retained, 0 not requested for this board, -1 invalid inherited WD1. */
+int wdt_stage2_keep_j716c(void);
 void wdt_reboot(void);
 int wdt_arm_seconds(unsigned seconds);
 /* The longest the 24 MHz counter allows, for each stage of a trial boot */

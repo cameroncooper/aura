@@ -1,15 +1,68 @@
 /* SPDX-License-Identifier: MIT AND GPL-2.0-only */
 
+#include "../build/build_cfg.h"
+
 #include "wdt.h"
 #include "adt.h"
 #include "types.h"
 #include "utils.h"
+
+#ifdef ESP_STAGE2
+#include "boot_options.h"
+#include "exception.h"
+#include "string.h"
+#include "xnuboot.h"
+#endif
 
 #define WDT_COUNT 0x10
 #define WDT_ALARM 0x14
 #define WDT_CTL   0x1c
 
 static u64 wdt_base = 0;
+
+#ifdef ESP_STAGE2
+/* The host may carry a prearmed WD1 across this specific RAM chainload. */
+int wdt_stage2_keep_j716c(void)
+{
+    size_t capacity = cur_boot_args.revision == 1   ? CMDLINE_LENGTH_RV1
+                      : cur_boot_args.revision == 2 ? CMDLINE_LENGTH_RV2
+                                                    : CMDLINE_LENGTH_RV3;
+    if (chip_id != T6050 || board_id != 0xe ||
+        !boot_option_present(cur_boot_args.rv3.cmdline, capacity, "j716c.wdt=keep"))
+        return 0;
+    u32 model_len, target_len;
+    const char *model = adt_getprop(adt, 0, "model", &model_len);
+    const char *target = adt_getprop(adt, 0, "target-type", &target_len);
+    if (!model || model_len != sizeof("Mac17,6") || memcmp(model, "Mac17,6", model_len) ||
+        !target || target_len != sizeof("J716c") || memcmp(target, "J716c", target_len))
+        return 0;
+
+    int path[8];
+    int node = adt_path_offset_trace(adt, "/arm-io/wdt", path);
+    u64 base, size;
+    u32 version;
+    if (aura_trial_enabled() || node < 0 ||
+        ADT_GETPROP(adt, node, "wdt-version", &version) != sizeof(version) || version != 3 ||
+        adt_get_reg(adt, path, "reg", 0, &base, &size) || base != 0x28836c000ULL || size != 0x4000)
+        return -1;
+
+    /* Check the inherited deadline without touching count, alarm or either watchdog. */
+    int before = exc_count;
+    exc_guard = GUARD_MARK | GUARD_SILENT;
+    u32 control = read32(base + WDT_CTL);
+    u32 alarm = read32(base + WDT_ALARM);
+    u32 count = read32(base + WDT_COUNT);
+    sysop("dsb sy");
+    sysop("isb");
+    exc_guard = GUARD_OFF;
+    if (exc_count != before || !(control & 4) || alarm <= count)
+        return -1;
+
+    wdt_base = base;
+    printf("WDT: J716c inherited WD1 retained (count %u, alarm %u)\n", count, alarm);
+    return 1;
+}
+#endif
 
 void wdt_disable(void)
 {

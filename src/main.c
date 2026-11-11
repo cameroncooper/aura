@@ -367,7 +367,13 @@ void aura_main(void)
     aic_init();
     smp_init();
 #endif
-    wdt_disable();
+#ifdef ESP_STAGE2
+    int retained_wdt = wdt_stage2_keep_j716c();
+    if (retained_wdt < 0)
+        panic("WDT: J716c inherited WD1 could not be verified\n");
+    if (!retained_wdt)
+#endif
+        wdt_disable();
     if (aura_trial_enabled() && wdt_arm_trial())
         printf("WDT: could not arm the trial watchdog\n");
 #if defined(CHAINLOADING) && !defined(ESP_STAGE2)
