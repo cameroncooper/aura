@@ -234,6 +234,7 @@ OBJECTS := \
 
 ifeq ($(ESP_STAGE2),1)
 OBJECTS += kboot_gpu_j716c.o
+OBJECTS += kboot_usb4_j716c.o
 endif
 
 FP_OBJECTS := \
@@ -292,7 +293,7 @@ $(BUILD_FP_OBJS): build/%.o: src/%.c
 # leaves room in .init for more of the guest-only objects.
 build/sptm_virt_cl4.o: CFLAGS += -Oz
 # Run-once OS handoff code: -Oz keeps .text within its 64 KiB steps (see _file_limit).
-build/kboot.o build/kboot_gpu_j716c.o: CFLAGS += -Oz
+build/kboot.o build/kboot_gpu_j716c.o build/kboot_usb4_j716c.o: CFLAGS += -Oz
 
 build/%.o: src/%.c build-tag build-cfg
 	$(QUIET)echo "  CC    $@"

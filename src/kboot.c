@@ -27,6 +27,7 @@
 #include "kboot_gpu_t8122.h"
 #include "kboot_pmp_t8122.h"
 #include "kboot_t6031.h"
+#include "kboot_usb4_j716c.h"
 #include "malloc.h"
 #include "mcc.h"
 #include "memory.h"
@@ -10132,10 +10133,15 @@ int kboot_prepare_dt(void *fdt)
         return -1;
     if (kboot_setup_atc(dt))
         return -1;
-    if (dt_set_acio_tunables())
-        return -1;
-    if (dt_set_pcie_tunables())
-        return -1;
+    if (kboot_usb4_j716c_requested(dt)) {
+        if (kboot_usb4_j716c_validate(dt))
+            return -1;
+    } else {
+        if (dt_set_acio_tunables())
+            return -1;
+        if (dt_set_pcie_tunables())
+            return -1;
+    }
     if (dt_set_ave())
         return -1;
     if (dt_set_ane_firmware())
