@@ -3136,16 +3136,19 @@ static bool dcp6_dt_describes(void *dt)
  * iommu-addresses: only what the ADT says, checked against the device tree and the registers.
  * The image is pinned because 27.0 and 27.0.1 report the same iBoot version.
  */
-#define T6050_DCP_UUID  "64863924-B56B-3E32-87FE-038677F52709"
-#define T6050_NDISP     5       /* disp0 reg[0..4] are the dcp's disp-0..disp-4 */
-#define T6050_BW_BASE   0x20000 /* bandwidth agent 0's scratch in the PMC metadata */
-#define T6050_BW_STRIDE 0x4000
-#define T6050_CLOCKS    4
-#define T6050_MBOX      0x8000 /* the ASC mailbox, from the coprocessor base */
-#define T6050_PATH      64
-#define T6050_STATUS    "asahi,t6050-dcp-handoff"
-#define T6050_TCR_WANT  (DART_T8110_TCR_TRANSLATE | DART_T8110_TCR_FOUR_LEVEL)
-#define T6050_TCR_MASK  (T6050_TCR_WANT | DART_T8110_TCR_BYPASS_DART)
+#define T6050_DCP_UUID   "64863924-B56B-3E32-87FE-038677F52709"
+#define J716C_DCP_UUID   "F7A23EEA-1630-3E78-BD25-D1EF87595FD5"
+#define J716C_DCP_OPT    "j716c,dcp-handoff"
+#define J716C_DCP_STATUS "j716c,dcp-handoff-status"
+#define T6050_NDISP      5       /* disp0 reg[0..4] are the dcp's disp-0..disp-4 */
+#define T6050_BW_BASE    0x20000 /* bandwidth agent 0's scratch in the PMC metadata */
+#define T6050_BW_STRIDE  0x4000
+#define T6050_CLOCKS     4
+#define T6050_MBOX       0x8000 /* the ASC mailbox, from the coprocessor base */
+#define T6050_PATH       64
+#define T6050_STATUS     "asahi,t6050-dcp-handoff"
+#define T6050_TCR_WANT   (DART_T8110_TCR_TRANSLATE | DART_T8110_TCR_FOUR_LEVEL)
+#define T6050_TCR_MASK   (T6050_TCR_WANT | DART_T8110_TCR_BYPASS_DART)
 /* Runs once per boot: size over speed, and out of .text where it fits (aura.ld) */
 #define T6050_INIT __attribute__((minsize, noinline, section(".init.t6050")))
 #define T6050_TEXT __attribute__((minsize, noinline))
@@ -3154,11 +3157,27 @@ static bool dcp6_dt_describes(void *dt)
 enum { T6050_DCP, T6050_DISP, T6050_MBOXN, T6050_DART_DCP, T6050_DART_DISP, T6050_PIODMA, T6050_N };
 
 static struct {
+    bool j716c;
     char path[T6050_N][T6050_PATH];
     u64 coproc, pmc, pmc_size, vram, vram_size;
     u32 bw_offset, nits, nclk, clk_id[T6050_CLOCKS], clk_hz[T6050_CLOCKS], pmc_ph;
     const char *gamut;
 } t6050;
+
+static const struct fw_version_info j716c_dcp_firmware = {
+    .version = V_UNKNOWN,
+    .string = "27.2",
+    .num = {27, 2, 0},
+    .num_length = 3,
+    .iboot = "mBoot-20457.41.3",
+};
+
+static T6050_TEXT bool t6050_adt_string(int node, const char *name, const char *want)
+{
+    u32 len = 0;
+    const char *value = adt_getprop(adt, node, name, &len);
+    return value && len == strlen(want) + 1 && !memcmp(value, want, len);
+}
 
 /* The dcp's reg entries and the ADT reg each equals (coproc: a prefix of it) */
 static const struct {
@@ -3212,10 +3231,17 @@ static T6050_INIT int t6050_check_adt(void)
     int disp0 = adt_path_offset(adt, "/arm-io/disp0");
     const char *uuid = nub < 0 ? NULL : adt_getprop(adt, nub, "uuid", &len);
 
-    if (os_firmware.version != V27_0)
+    if (t6050.j716c) {
+        int chosen = adt_path_offset(adt, "/chosen");
+        if (!t6050_adt_string(0, "model", "Mac17,6") ||
+            !t6050_adt_string(0, "target-type", "J716c") ||
+            dcp6_adt_u32(chosen, "board-id", &val) || val != 0xe ||
+            !os_firmware.iboot || strcmp(os_firmware.iboot, j716c_dcp_firmware.iboot))
+            bail("not the qualified J716c boot firmware\n");
+    } else if (os_firmware.version != V27_0)
         bail("OS firmware %s is not 27.0\n", os_firmware.string);
-    if (!dcp6_is_uuid(uuid, len) || strcmp(uuid, T6050_DCP_UUID))
-        bail("DCP image %s is not " T6050_DCP_UUID "\n", dcp6_is_uuid(uuid, len) ? uuid : "(none)");
+    if (!dcp6_is_uuid(uuid, len) || strcmp(uuid, t6050.j716c ? J716C_DCP_UUID : T6050_DCP_UUID))
+        bail("DCP image %s differs from the qualified image\n", dcp6_is_uuid(uuid, len) ? uuid : "(none)");
     if (dcp6_adt_u32(nub, "running", &val) || val != 1 || disp0 < 0 ||
         adt_getprop(adt, disp0, "external", NULL))
         bail("the DCP is not running an internal panel\n");
@@ -3292,12 +3318,69 @@ static T6050_INIT int t6050_check_adt(void)
     return 0;
 }
 
+/* J716c uses one explicit identity range, rather than the empty ranges on older trees. */
+static T6050_TEXT bool t6050_identity_range(void *dt, int node, u64 address, u64 size)
+{
+    int parent = fdt_parent_offset(dt, node), len = 0;
+    const fdt64_t *range = fdt_getprop(dt, parent, "ranges", &len);
+    if (parent < 0 || fdt_address_cells(dt, parent) != 2 || fdt_size_cells(dt, parent) != 2 ||
+        fdt_parent_offset(dt, parent) != 0 || fdt_address_cells(dt, 0) != 2 || !range ||
+        len != 24 || fdt64_ld(range) != fdt64_ld(range + 1))
+        return false;
+    u64 base = fdt64_ld(range), span = fdt64_ld(range + 2);
+    return span && span <= UINT64_MAX - base && address >= base && address - base <= span && size &&
+           size <= span - (address - base);
+}
+
+/* The J716c tree already describes the clocks and PMC metadata. Verify those providers. */
+static T6050_TEXT int t6050_check_existing_resources(void *dt, int dcp)
+{
+    int len = 0;
+    const fdt32_t *clocks = fdt_getprop(dt, dcp, "clocks", &len);
+    if (!clocks || len != (int)t6050.nclk * 4)
+        bail("the existing DCP clocks have the wrong shape\n");
+    const fdt32_t *ids = fdt_getprop(dt, dcp, "apple,clock-ids", &len);
+    if (!ids || len != (int)t6050.nclk * 4 ||
+        fdt_stringlist_count(dt, dcp, "clock-names") != (int)t6050.nclk)
+        bail("the existing DCP clock IDs or names have the wrong shape\n");
+    for (u32 i = 0; i < t6050.nclk; i++) {
+        char name[24];
+        snprintf(name, sizeof(name), "firmware-%u", i);
+        int provider = fdt_node_offset_by_phandle(dt, fdt32_ld(clocks + i));
+        const fdt32_t *rate = fdt_getprop(dt, provider, "clock-frequency", &len);
+        if (provider < 0 || fdt_node_check_compatible(dt, provider, "fixed-clock") ||
+            fdt32_ld(ids + i) != t6050.clk_id[i] ||
+            fdt_stringlist_search(dt, dcp, "clock-names", name) != (int)i || !rate || len != 4 ||
+            fdt32_ld(rate) != t6050.clk_hz[i])
+            bail("the existing DCP clock %u differs from the ADT\n", i);
+        const fdt32_t *cells = fdt_getprop(dt, provider, "#clock-cells", &len);
+        if (!cells || len != 4 || fdt32_ld(cells))
+            bail("the existing DCP clock %u takes arguments\n", i);
+    }
+
+    const fdt32_t *scratch = fdt_getprop(dt, dcp, "apple,bw-scratch", &len);
+    if (!scratch || len != 16 || fdt32_ld(scratch + 1) != 0 ||
+        fdt32_ld(scratch + 2) != T6050_NDISP || fdt32_ld(scratch + 3) != t6050.bw_offset)
+        bail("the existing DCP bandwidth scratch differs from the ADT\n");
+    int pmc = fdt_node_offset_by_phandle(dt, fdt32_ld(scratch));
+    const fdt64_t *reg = fdt_getprop(dt, pmc, "reg", &len);
+    if (pmc < 0 || !reg || len != 16 || fdt64_ld(reg) != t6050.pmc ||
+        fdt64_ld(reg + 1) != t6050.pmc_size ||
+        !t6050_identity_range(dt, pmc, t6050.pmc, t6050.pmc_size))
+        bail("the existing DCP bandwidth provider differs from the ADT\n");
+    const fdt32_t *cells = fdt_getprop(dt, pmc, "#apple,bw-scratch-cells", &len);
+    if (!cells || len != 4 || fdt32_ld(cells) != 3)
+        bail("the existing DCP bandwidth provider has the wrong argument count\n");
+    t6050.pmc_ph = fdt32_ld(scratch);
+    return 0;
+}
+
 /* The device tree side: the nodes it describes match the ADT, and nothing is published yet */
 static T6050_INIT int t6050_check_dt(void *dt)
 {
     char (*path)[T6050_PATH] = t6050.path;
-    int dcp = kboot_fdt_path_exact(dt, "dcp");
-    int disp = kboot_fdt_path_exact(dt, "disp0");
+    int dcp = kboot_fdt_path_exact(dt, t6050.j716c ? "/soc@200000000/dcp@48ae00000" : "dcp");
+    int disp = kboot_fdt_path_exact(dt, t6050.j716c ? "/display-subsystem" : "disp0");
     int parent = dcp < 0 ? dcp : fdt_parent_offset(dt, dcp);
     int len = -1;
 
@@ -3307,14 +3390,17 @@ static T6050_INIT int t6050_check_dt(void *dt)
         fdt_get_path(dt, disp, path[T6050_DISP], T6050_PATH))
         bail("aliases dcp and disp0 are not apple,t6050-dcp and apple,display-subsystem\n");
     if (parent < 0 || dcp6_cells_2_2(dt, dcp, "dcp") || !fdt_getprop(dt, parent, "ranges", &len) ||
-        len || fdt_subnode_offset(dt, dcp, "panel") < 0)
+        (t6050.j716c ? len != 24 : len != 0) || fdt_subnode_offset(dt, dcp, "panel") < 0)
         bail("dcp is not on an identity-mapped bus, or has no panel child\n");
     if (dcp6_status_disabled(dt, dcp, "dcp") || dcp6_status_disabled(dt, disp, "disp0"))
         return -1;
     if (fdt_getprop(dt, dcp, "memory-region", NULL) ||
-        fdt_getprop(dt, disp, "memory-region", NULL) || fdt_getprop(dt, dcp, "clocks", NULL) ||
-        fdt_getprop(dt, dcp, "apple,bw-scratch", NULL))
+        fdt_getprop(dt, disp, "memory-region", NULL) ||
+        (!t6050.j716c &&
+         (fdt_getprop(dt, dcp, "clocks", NULL) || fdt_getprop(dt, dcp, "apple,bw-scratch", NULL))))
         bail("the device tree already has a memory-region, clocks or apple,bw-scratch\n");
+    if (t6050.j716c && t6050_check_existing_resources(dt, dcp))
+        return -1;
 
     for (size_t i = 0; i < ARRAY_SIZE(t6050_regs); i++) {
         u64 a, s;
@@ -3324,7 +3410,9 @@ static T6050_INIT int t6050_check_dt(void *dt)
             t6050_adt_reg(t6050_regs[i].disp0 ? "/arm-io/disp0" : "/arm-io/dcp", t6050_regs[i].idx,
                           &a, &s) ||
             fdt64_ld(&reg[2 * idx]) != a || fdt64_ld(&reg[2 * idx + 1]) > s ||
-            (i && fdt64_ld(&reg[2 * idx + 1]) != s))
+            (i && fdt64_ld(&reg[2 * idx + 1]) != s) ||
+            (t6050.j716c &&
+             ((!i && fdt64_ld(&reg[1]) != 0x4000) || !t6050_identity_range(dt, dcp, a, s))))
             bail("dcp %s differs from the ADT\n", t6050_regs[i].name);
     }
 
@@ -3334,7 +3422,9 @@ static T6050_INIT int t6050_check_dt(void *dt)
     if (!reg || len < 16 || fdt64_ld(&reg[0]) != t6050.coproc + T6050_MBOX ||
         fdt_node_check_compatible(dt, mbox, "apple,asc-mailbox-v4") ||
         dcp6_status_disabled(dt, mbox, "the dcp mailbox") ||
-        fdt_get_path(dt, mbox, path[T6050_MBOXN], T6050_PATH))
+        fdt_get_path(dt, mbox, path[T6050_MBOXN], T6050_PATH) ||
+        (t6050.j716c && (len != 16 || fdt64_ld(reg + 1) != 0x4000 ||
+                         !t6050_identity_range(dt, mbox, fdt64_ld(reg), fdt64_ld(reg + 1)))))
         bail("dcp mboxes is not the ASC mailbox at 0x%lx\n", t6050.coproc + T6050_MBOX);
     snprintf(path[T6050_PIODMA], T6050_PATH, "%s/piodma", path[T6050_DCP]);
     return 0;
@@ -3343,20 +3433,24 @@ static T6050_INIT int t6050_check_dt(void *dt)
 /* Each stream's iommus against its ADT DART, then, with the display powered, the live state */
 static T6050_TEXT int t6050_check_darts(void *dt)
 {
-    u64 base[3], l1[3], vm_base, vm_size, count;
+    u64 base[3], l1[3], vm_base, vm_size, count, size;
     char name[16];
 
     for (int i = 0; i < 3; i++) {
         int node = adt_path_offset(adt, t6050_streams[i].adt);
         snprintf(name, sizeof(name), "l1-tt-%u", t6050_streams[i].sid);
-        if (node < 0 || t6050_adt_reg(t6050_streams[i].adt, 0, &base[i], NULL) ||
+        if (node < 0 || t6050_adt_reg(t6050_streams[i].adt, 0, &base[i], &size) ||
             dcp6_adt_u64(node, "vm-base", &vm_base) || dcp6_adt_u64(node, "vm-size", &vm_size) ||
             dcp6_adt_u64_pair(node, name, &l1[i], &count) || !l1[i])
             bail("%s: no reg, DVA window or %s\n", t6050_streams[i].adt, name);
         const char *user = t6050.path[t6050_streams[i].node];
         int dart = dcp6_check_iommu(dt, kboot_fdt_path_exact(dt, user), user, t6050_streams[i].sid,
                                     base[i], vm_base, vm_size);
-        if (dart < 0 || fdt_get_path(dt, dart, t6050.path[t6050_streams[i].dart], T6050_PATH))
+        int len = 0;
+        const fdt64_t *reg = dart < 0 ? NULL : fdt_getprop(dt, dart, "reg", &len);
+        if (dart < 0 || fdt_get_path(dt, dart, t6050.path[t6050_streams[i].dart], T6050_PATH) ||
+            (t6050.j716c && (!reg || len != 16 || fdt64_ld(reg + 1) != size ||
+                             !t6050_identity_range(dt, dart, base[i], size))))
             return -1;
     }
 
@@ -3388,48 +3482,54 @@ static T6050_TEXT int t6050_publish(void *dt)
     char name[40], node[T6050_PATH + 40], names[T6050_CLOCKS * 12];
     fdt32_t cells[T6050_CLOCKS], ids[T6050_CLOCKS], v[4];
     int nlen = 0;
+    const struct fw_version_info *firmware = t6050.j716c ? &j716c_dcp_firmware : &os_firmware;
+    const char *uuid = t6050.j716c ? J716C_DCP_UUID : T6050_DCP_UUID;
 
     if (firmware_set_fdt(dt, kboot_fdt_path_exact(dt, t6050.path[T6050_DCP]),
-                         "apple,firmware-version", &os_firmware) ||
+                         "apple,firmware-version", firmware) ||
         firmware_set_fdt(dt, kboot_fdt_path_exact(dt, t6050.path[T6050_DCP]),
-                         "apple,firmware-compat", &os_firmware) ||
-        t6050_setprop(dt, T6050_DCP, "apple,firmware-uuid", T6050_DCP_UUID, sizeof(T6050_DCP_UUID)))
+                         "apple,firmware-compat", firmware) ||
+        t6050_setprop(dt, T6050_DCP, "apple,firmware-uuid", uuid, strlen(uuid) + 1))
         return -1;
 
-    /* The bandwidth scratch, in the PMC metadata (disp0 reg[4]), as register window 5 */
-    strcpy(node, t6050.path[T6050_DCP]);
-    *strrchr(node, '/') = 0;
-    snprintf(name, sizeof(name), "pmc-metadata@%lx", t6050.pmc);
-    u32 ph = t6050_add_node(dt, node[0] ? node : "/", name);
-    t6050.pmc_ph = ph;
-    snprintf(node + strlen(node), sizeof(node) - strlen(node), "/%s", name);
-    fdt64_t reg[2] = {cpu_to_fdt64(t6050.pmc), cpu_to_fdt64(t6050.pmc_size)};
-    v[0] = cpu_to_fdt32(ph);
-    v[1] = cpu_to_fdt32(0);
-    v[2] = cpu_to_fdt32(T6050_NDISP);
-    v[3] = cpu_to_fdt32(t6050.bw_offset);
-    if (!ph || fdt_setprop(dt, kboot_fdt_path_exact(dt, node), "reg", reg, sizeof(reg)) ||
-        fdt_setprop_u32(dt, kboot_fdt_path_exact(dt, node), "#apple,bw-scratch-cells", 3) ||
-        t6050_setprop(dt, T6050_DCP, "apple,bw-scratch", v, sizeof(v)))
-        return -1;
+    if (!t6050.j716c) {
+        /* The bandwidth scratch, in the PMC metadata (disp0 reg[4]), as register window 5 */
+        strcpy(node, t6050.path[T6050_DCP]);
+        *strrchr(node, '/') = 0;
+        snprintf(name, sizeof(name), "pmc-metadata@%lx", t6050.pmc);
+        u32 ph = t6050_add_node(dt, node[0] ? node : "/", name);
+        t6050.pmc_ph = ph;
+        snprintf(node + strlen(node), sizeof(node) - strlen(node), "/%s", name);
+        fdt64_t reg[2] = {cpu_to_fdt64(t6050.pmc), cpu_to_fdt64(t6050.pmc_size)};
+        v[0] = cpu_to_fdt32(ph);
+        v[1] = cpu_to_fdt32(0);
+        v[2] = cpu_to_fdt32(T6050_NDISP);
+        v[3] = cpu_to_fdt32(t6050.bw_offset);
+        if (!ph || fdt_setprop(dt, kboot_fdt_path_exact(dt, node), "reg", reg, sizeof(reg)) ||
+            fdt_setprop_u32(dt, kboot_fdt_path_exact(dt, node), "#apple,bw-scratch-cells", 3) ||
+            t6050_setprop(dt, T6050_DCP, "apple,bw-scratch", v, sizeof(v)))
+            return -1;
 
-    /* The firmware's clocks, by index into apple,clock-ids */
-    for (u32 i = 0; i < t6050.nclk; i++) {
-        snprintf(name, sizeof(name), "clock-dcp-firmware-%u", t6050.clk_id[i]);
-        snprintf(node, sizeof(node), "/%s", name);
-        cells[i] = cpu_to_fdt32(t6050_add_node(dt, "/", name));
-        ids[i] = cpu_to_fdt32(t6050.clk_id[i]);
-        nlen += snprintf(names + nlen, sizeof(names) - nlen, "firmware-%u", i) + 1;
-        if (!cells[i] ||
-            fdt_setprop_string(dt, kboot_fdt_path_exact(dt, node), "compatible", "fixed-clock") ||
-            fdt_setprop_u32(dt, kboot_fdt_path_exact(dt, node), "#clock-cells", 0) ||
-            fdt_setprop_u32(dt, kboot_fdt_path_exact(dt, node), "clock-frequency", t6050.clk_hz[i]))
+        /* The firmware's clocks, by index into apple,clock-ids */
+        for (u32 i = 0; i < t6050.nclk; i++) {
+            snprintf(name, sizeof(name), "clock-dcp-firmware-%u", t6050.clk_id[i]);
+            snprintf(node, sizeof(node), "/%s", name);
+            cells[i] = cpu_to_fdt32(t6050_add_node(dt, "/", name));
+            ids[i] = cpu_to_fdt32(t6050.clk_id[i]);
+            nlen += snprintf(names + nlen, sizeof(names) - nlen, "firmware-%u", i) + 1;
+            if (!cells[i] ||
+                fdt_setprop_string(dt, kboot_fdt_path_exact(dt, node), "compatible",
+                                   "fixed-clock") ||
+                fdt_setprop_u32(dt, kboot_fdt_path_exact(dt, node), "#clock-cells", 0) ||
+                fdt_setprop_u32(dt, kboot_fdt_path_exact(dt, node), "clock-frequency",
+                                t6050.clk_hz[i]))
+                return -1;
+        }
+        if (t6050_setprop(dt, T6050_DCP, "clocks", cells, t6050.nclk * 4) ||
+            t6050_setprop(dt, T6050_DCP, "clock-names", names, nlen) ||
+            t6050_setprop(dt, T6050_DCP, "apple,clock-ids", ids, t6050.nclk * 4))
             return -1;
     }
-    if (t6050_setprop(dt, T6050_DCP, "clocks", cells, t6050.nclk * 4) ||
-        t6050_setprop(dt, T6050_DCP, "clock-names", names, nlen) ||
-        t6050_setprop(dt, T6050_DCP, "apple,clock-ids", ids, t6050.nclk * 4))
-        return -1;
 
     /* /vram: the firmware's default framebuffer and the DRM aperture */
     snprintf(name, sizeof(name), "framebuffer@%lx", t6050.vram);
@@ -3593,10 +3693,25 @@ static T6050_TEXT void t6050_ext_handoff(void *dt)
 }
 
 /* Any failure leaves the display nodes disabled: the boot framebuffer keeps the panel */
-static T6050_TEXT void t6050_handoff(void *dt)
+static T6050_TEXT void t6050_handoff(void *dt, u32 j716c_mode)
 {
     memset(&t6050, 0, sizeof(t6050));
-    if (!t6050_check_adt() && !t6050_check_dt(dt) && !t6050_check_darts(dt)) {
+    t6050.j716c = j716c_mode != 0;
+    const char *status = "refused-adt";
+    if (t6050_check_adt())
+        goto refused;
+    status = "refused-dt";
+    if (t6050_check_dt(dt))
+        goto refused;
+    status = "refused-darts";
+    if (t6050_check_darts(dt))
+        goto refused;
+    if (j716c_mode == 2) {
+        t6050_setprop(dt, -1, J716C_DCP_STATUS, "validated", sizeof("validated"));
+        return;
+    }
+    status = "refused-publish";
+    {
         void *scratch = dcp6_scratch(dt);
         if (scratch && t6050_publish(scratch)) {
             dlog("DT write failed (full?)\n");
@@ -3605,16 +3720,22 @@ static T6050_TEXT void t6050_handoff(void *dt)
             dlog("internal display handed off: firmware %s, bw-scratch 0x%lx+0x%x, %u clock(s), "
                  "%u nits\n",
                  os_firmware.string, t6050.pmc, t6050.bw_offset, t6050.nclk, t6050.nits);
-            t6050_ext_handoff(dt);
+            if (t6050.j716c)
+                t6050_setprop(dt, -1, J716C_DCP_STATUS, "published", sizeof("published"));
+            else
+                t6050_ext_handoff(dt);
             return;
         }
     }
+refused:
+    if (t6050.j716c)
+        t6050_setprop(dt, -1, J716C_DCP_STATUS, status, strlen(status) + 1);
     if (t6050_setprop(dt, -1, T6050_STATUS, "refused", sizeof("refused")))
         dlog("could not set /chosen/" T6050_STATUS "\n");
     dlog("internal display handoff refused; the boot framebuffer keeps the panel\n");
 }
 
-/* Always returns 0: nothing here may stop the boot */
+/* A pre-enabled J716c source tree is an error; qualification refusals retain the framebuffer. */
 int dt_set_display_handoff(void *dt)
 {
     memset(&dcp6, 0, sizeof(dcp6));
@@ -3633,8 +3754,21 @@ int dt_set_display_handoff(void *dt)
             return 0;
         dcp6_find_nubs();
         dcp6_reserve_oslogs(dt);
-        if (fdt_get_alias(dt, "dcp") && fdt_get_alias(dt, "disp0"))
-            t6050_handoff(dt);
+        int chosen = fdt_path_offset(dt, "/chosen"), len = 0;
+        const fdt32_t *opt = fdt_getprop(dt, chosen, J716C_DCP_OPT, &len);
+        if (!fdt_node_check_compatible(dt, 0, "apple,j716c") && opt) {
+            if (len != 4 || fdt32_ld(opt) < 1 || fdt32_ld(opt) > 2) {
+                fdt_setprop_string(dt, chosen, J716C_DCP_STATUS, "refused-opt-in");
+                return 0;
+            }
+            int dcp = kboot_fdt_path_exact(dt, "/soc@200000000/dcp@48ae00000");
+            int disp = kboot_fdt_path_exact(dt, "/display-subsystem");
+            if (dcp6_status_disabled(dt, dcp, "J716c dcp") ||
+                dcp6_status_disabled(dt, disp, "J716c display"))
+                return -1;
+            t6050_handoff(dt, fdt32_ld(opt));
+        } else if (fdt_get_alias(dt, "dcp") && fdt_get_alias(dt, "disp0"))
+            t6050_handoff(dt, 0);
         else
             dlog("the device tree does not describe the internal display: no handoff\n");
         return 0;
