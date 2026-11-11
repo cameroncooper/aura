@@ -28,6 +28,7 @@
 #include "kboot_pmp_t8122.h"
 #include "kboot_t6031.h"
 #include "kboot_usb4_j716c.h"
+#include "kboot_usb2_j716c.h"
 #include "malloc.h"
 #include "mcc.h"
 #include "memory.h"
@@ -9909,6 +9910,7 @@ static int dt_ans_nvme_node(void)
 
 int kboot_prepare_dt(void *fdt)
 {
+    kboot_usb2_j716c_reset();
     if (smp_has_pending_calls()) {
         next_stage.entry = NULL;
         bail("FDT: refusing preparation while secondary callbacks are pending\n");
@@ -10575,6 +10577,11 @@ int kboot_boot(void *kernel)
         return -1;
     if (kboot_move_to_exec_window(&kernel))
         return -1;
+    if (kboot_usb2_j716c_prepare(dt, dt_bufsize)) {
+        next_stage.entry = NULL;
+        printf("USB0: refusing Linux handoff after metadata validation failure\n");
+        return -1;
+    }
     printf("Preparing to boot kernel at %p with fdt at %p\n", kernel, dt);
 
     if (smp_has_pending_calls()) {

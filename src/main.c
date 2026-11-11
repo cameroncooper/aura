@@ -18,6 +18,7 @@
 #include "gxf.h"
 #include "heapblock.h"
 #include "j873.h"
+#include "kboot_usb2_j716c.h"
 #include "mcc.h"
 #include "memory.h"
 #include "nvme.h"
@@ -435,6 +436,10 @@ next_stage:
         printf("NVMe handoff failed; returning to proxy\n");
         uartproxy_run(NULL);
         panic("NVMe handoff failed\n");
+    }
+    if (kboot_usb2_j716c_finish((void *)next_stage.args[0])) {
+        next_stage.entry = NULL;
+        panic("USB0 ownership retirement failed; refusing next stage\n");
     }
     usb_cdc_cleanup();
     exception_shutdown();
