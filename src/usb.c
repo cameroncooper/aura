@@ -308,6 +308,196 @@ static bool usb_device_mode_disabled(u32 idx)
     return node >= 0 && adt_get_property(adt, node, "usb-device-disable");
 }
 
+/* This experimental inherited profile keeps SID1 blocked throughout. Other
+ * implemented streams remain byte-for-byte unchanged, including invalid roots. */
+static bool usb_t6050_power_ready(void)
+{
+    static const char *const names[] = {"ATC0_COMMON", "ATC0_USB_AON", "ATC0_USB", "ATC0_PHYMXWRAP"};
+    static const u64 power[] = {0x280600208ULL, 0x288300148ULL, 0x288300150ULL, 0x288300158ULL};
+    for (unsigned i = 0; i < 4; i++)
+        if (pmgr_psreg_by_name(0, names[i]) != power[i])
+            return false;
+    for (unsigned i = 0; i < 4; i++) {
+        u32 ps = read32(power[i]);
+        if ((ps & 0xff) != 0xff || (ps & (BIT(31) | BIT(28) | BIT(11) | BIT(10))))
+            return false;
+    }
+    return true;
+}
+
+static int usb_t6050_sid1_state(u32 tcr[16], u32 ttbr[16], bool compare)
+{
+    if ((read32(0x2a2f8000cULL) & 0x1ff) != 16 ||
+        (read32(0x2a2f80200ULL) & 1) || (read32(0x2a2f80208ULL) & 1) ||
+        (read32(0x2a2f80100ULL) & BIT(31)) ||
+        poll32(0x2a2f80080ULL, BIT(31), 0, 1000))
+        return -1;
+    for (unsigned sid = 0; sid < 16; sid++) {
+        u32 control = read32(0x2a2f81000ULL + 4 * sid);
+        u32 root = read32(0x2a2f81400ULL + 4 * sid);
+        if (sid == 1 ? (control || root) :
+            ((control != 0 && control != 1 && control != 6) || (root & 1)))
+            return -1;
+        if (compare && (control != tcr[sid] || root != ttbr[sid]))
+            return -1;
+        tcr[sid] = control;
+        ttbr[sid] = root;
+    }
+    return 0;
+}
+
+/* Exact inherited no-object path observed by read-only mode5. No ownership
+ * receipt is inferred from a previous loader, an idle TLB, or a missing object. */
+int usb_t6050_retire_for_kernel(void)
+{
+    struct usb_t6050_regs regs;
+    if (chip_id != T6050 || usb_t6050_get_regs(&regs) ||
+        regs.phy != 0x2a2a90000ULL || regs.phy_size != 0x4000 ||
+        regs.digital != 0x2a2800000ULL || regs.pipe != 0x2a2a84000ULL ||
+        regs.pipe_size != 0x4000 || regs.dwc != 0x2a2280000ULL)
+        return -1;
+    for (int i = 0; i < USB_IODEV_COUNT; i++)
+        if (iodev_get_opaque(IODEV_USB0 + i))
+            return -1;
+    if (!usb_t6050_power_ready())
+        return -1;
+    /* Never inspect a controller behind reset or switch a native producer. */
+    if ((read32(regs.pipe + PIPEHANDLER_MUX_CTRL) & 0x73) != 0x42 ||
+        (read32(regs.pipe + PIPEHANDLER_AON_GEN) & 0x11) != 1)
+        return -1;
+    u32 tcr[16], ttbr[16];
+    if (usb_t6050_sid1_state(tcr, ttbr, false) ||
+        (read32(regs.dwc + DWC3_GCTL) & DWC3_GCTL_PRTCAPDIR(DWC3_GCTL_PRTCAP_OTG)) !=
+            DWC3_GCTL_PRTCAPDIR(DWC3_GCTL_PRTCAP_DEVICE) ||
+        (read32(regs.dwc + DWC3_DCTL) & (BIT(31) | DWC3_DCTL_CSFTRST)) ||
+        !(read32(regs.dwc + DWC3_DSTS) & DWC3_DSTS_DEVCTRLHLT) ||
+        read32(regs.dwc + DWC3_DEVTEN) || read32(regs.dwc + DWC3_DALEPENA))
+        return -1;
+    /* Public DWC device-reset sequence, with SID1 already blocked/rootless.
+     * On failure nothing is freed and no Linux owner will be published. */
+    set32(regs.dwc + DWC3_DCTL, DWC3_DCTL_CSFTRST);
+    if (poll32(regs.dwc + DWC3_DCTL, DWC3_DCTL_CSFTRST, 0, 1000) ||
+        (read32(regs.dwc + DWC3_DCTL) & BIT(31)) ||
+        !(read32(regs.dwc + DWC3_DSTS) & DWC3_DSTS_DEVCTRLHLT) ||
+        read32(regs.dwc + DWC3_DEVTEN) || read32(regs.dwc + DWC3_DALEPENA))
+        return -1;
+    set32(regs.pipe + PIPEHANDLER_AON_GEN, PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN);
+    clear32(regs.pipe + PIPEHANDLER_AON_GEN, PIPEHANDLER_AON_GEN_DWC3_RESET_N);
+    if (poll32(regs.pipe + PIPEHANDLER_AON_GEN, 0x11, 0x10, 1000) ||
+        usb_t6050_sid1_state(tcr, ttbr, true))
+        return -1;
+    /* T8110 FLUSH_SID(1). An idle pre-check is not completion evidence. */
+    dma_wmb();
+    write32(0x2a2f80080ULL, 0x101);
+    if (poll32(0x2a2f80080ULL, BIT(31), 0, 1000))
+        return -1;
+    dma_rmb();
+    if (!usb_t6050_power_ready() || usb_t6050_sid1_state(tcr, ttbr, true) ||
+        (read32(regs.pipe + PIPEHANDLER_MUX_CTRL) & 0x73) != 0x42 ||
+        (read32(regs.pipe + PIPEHANDLER_AON_GEN) & 0x11) != 0x10)
+        return -1;
+    printf("USB0: inherited device reset/clamped; SID1 blocked and flush complete; foreign streams retained\n");
+    return 0;
+}
+
+/* Passive mode: only six PMGR state registers already read by pmgr_init.
+ * An unavailable or shifted metadata entry causes no register access. */
+int usb_t6050_snapshot_pmgr(char *out, size_t size)
+{
+    static const struct { const char *name, *label; u64 address; } gates[] = {
+        {"ATC0_COMMON", "common", 0x280600208ULL},
+        {"ATC0_USB_AON", "aon", 0x288300148ULL},
+        {"ATC0_USB", "usb", 0x288300150ULL},
+        {"ATC0_PHYMXWRAP", "wrap", 0x288300158ULL},
+        {"FAB3_SOC", "fab3", 0x2806001e0ULL},
+        {"FAB0_PIOGW", "piogw", 0x2806001d8ULL},
+    };
+    if (!out || size < 2)
+        return -1;
+    size_t used = 0;
+    out[0] = 0;
+    for (unsigned i = 0; i < 6; i++) {
+        uintptr_t address = pmgr_psreg_by_name(0, gates[i].name);
+        int n;
+        if (address != gates[i].address)
+            n = snprintf(out + used, size - used, "%s=unavailable;", gates[i].label);
+        else
+            n = snprintf(out + used, size - used, "%s=%08x;", gates[i].label, read32(address));
+        if (n < 0)
+            return -1;
+        if ((size_t)n >= size - used)
+            break;
+        used += n;
+    }
+    return 0;
+}
+
+/* Mode5 is read-only. Live PMGR observations are rechecked before the
+ * fixed USB status windows; no reset, DMA, TLB, GPIO or clock writes occur. */
+int usb_t6050_snapshot_state(char *out, size_t size)
+{
+    static const char *const names[] = {"ATC0_COMMON", "ATC0_USB_AON", "ATC0_USB", "ATC0_PHYMXWRAP"};
+    static const u64 power[] = {0x280600208ULL, 0x288300148ULL, 0x288300150ULL, 0x288300158ULL};
+    struct usb_t6050_regs regs;
+    u32 ps[4];
+    if (!out || size < 512)
+        return -1;
+    if (usb_t6050_get_regs(&regs) || regs.pipe != 0x2a2a84000ULL ||
+        regs.pipe_size != 0x4000 || regs.dwc != 0x2a2280000ULL) {
+        snprintf(out, size, "state=skipped-metadata;");
+        return 0;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        if (pmgr_psreg_by_name(0, names[i]) != power[i]) {
+            snprintf(out, size, "state=skipped-metadata;gate=%u;", i);
+            return 0;
+        }
+    }
+    bool ready = true;
+    for (unsigned i = 0; i < 4; i++) {
+        ps[i] = read32(power[i]);
+        ready &= (ps[i] & 0xff) == 0xff && !(ps[i] & (BIT(31) | BIT(28) | BIT(11) | BIT(10)));
+    }
+    if (!ready) {
+        snprintf(out, size, "state=skipped-power;pmgr=%08x,%08x,%08x,%08x;", ps[0], ps[1], ps[2], ps[3]);
+        return 0;
+    }
+    u32 mux = read32(regs.pipe + PIPEHANDLER_MUX_CTRL) & 0x73;
+    u32 aon = read32(regs.pipe + PIPEHANDLER_AON_GEN) & 0x11;
+    u32 nsids = read32(0x2a2f8000cULL) & 0x1ff;
+    u32 locked = 0, busy = 0, roots = 0, valid = 0, bad = 0, tcr1 = 0, root1 = 0, first_tcr = 0;
+    int first_sid = -1;
+    bool dart_read = nsids >= 2 && nsids <= 256;
+    if (dart_read) {
+        locked = read32(0x2a2f80200ULL) & 1;
+        busy = !!(read32(0x2a2f80080ULL) & BIT(31));
+        for (unsigned sid = 0; sid < nsids; sid++) {
+            u32 tcr = read32(0x2a2f81000ULL + 4 * sid);
+            u32 ttbr = read32(0x2a2f81400ULL + 4 * sid);
+            roots += !!ttbr;
+            valid += !!(ttbr & 1);
+            if (tcr != 0 && tcr != 6) {
+                bad++;
+                if (first_sid < 0) { first_sid = sid; first_tcr = tcr; }
+            }
+            if (sid == 1) { tcr1 = tcr; root1 = !!ttbr; }
+        }
+    }
+    u32 role = 0, ctl = 0, halted = 0, events = 0, endpoints = 0;
+    bool dwc = (mux == 0x22 || mux == 0x42) && aon == 1;
+    if (dwc) {
+        role = (read32(regs.dwc + DWC3_GCTL) & DWC3_GCTL_PRTCAPDIR(DWC3_GCTL_PRTCAP_OTG)) >> 12;
+        ctl = read32(regs.dwc + DWC3_DCTL) & (BIT(31) | DWC3_DCTL_CSFTRST);
+        halted = !!(read32(regs.dwc + DWC3_DSTS) & DWC3_DSTS_DEVCTRLHLT);
+        events = read32(regs.dwc + DWC3_DEVTEN);
+        endpoints = read32(regs.dwc + DWC3_DALEPENA);
+    }
+    snprintf(out, size, "state=read-only;pmgr=%08x,%08x,%08x,%08x;mux=%x;aon=%x;dart=%s;dart_sids=%u;locked=%u;tlb_busy=%u;roots=%u;valid_roots=%u;bad_tcrs=%u;first_bad_sid=%d;first_bad_tcr=%x;sid1_tcr=%x;sid1_root=%u;dwc=%s;role=%u;ctl=%x;halted=%u;events=%x;eps=%x;",
+             ps[0], ps[1], ps[2], ps[3], mux, aon, dart_read ? "read-only" : "skipped-sidcount", nsids, locked, busy, roots, valid, bad,
+             first_sid, first_tcr, tcr1, root1, dwc ? "read-only" : "skipped-pipe", role, ctl, halted, events, endpoints);
+    return 0;
+}
+
 static int usb_drd_get_regs(u32 idx, struct usb_drd_regs *regs)
 {
     int adt_drd_path[8];
