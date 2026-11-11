@@ -3,19 +3,27 @@
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-import argparse, pathlib, time
+import argparse, struct, time
+
+LOAD_HEADER = struct.Struct("<8sIIQQ")
+LOAD_HEADER_OFFSET = 0x808
+RUN_BASE_OFFSET = LOAD_HEADER_OFFSET + 0x18
+RAW_ENTRY = 0x800
+PAGE_SIZE = 0x4000
 
 parser = argparse.ArgumentParser(description='Mach-O loader for aura')
 parser.add_argument('-q', '--quiet', action="store_true", help="Disable framebuffer")
 parser.add_argument('-n', '--no-sepfw', action="store_true", help="Do not preserve SEPFW")
 parser.add_argument('-c', '--call', action="store_true", help="Use call mode")
 parser.add_argument('-r', '--raw', action="store_true", help="Image is raw")
-parser.add_argument('-E', '--entry-point', action="store", type=int, help="Entry point for the raw image", default=0x800)
+parser.add_argument('-E', '--entry-point', action="store", type=int, help="Entry point for the raw image", default=RAW_ENTRY)
 parser.add_argument('-x', '--xnu', action="store_true", help="Set up for chainloading XNU")
 parser.add_argument('--vector-only', action="store_true", help="Return after vector reply without probing the next image")
 parser.add_argument('--capture', type=pathlib.Path, help="Write raw post-vector console bytes to this file")
 parser.add_argument('--capture-seconds', type=float, default=0, help="Seconds of raw console capture after vector")
 parser.add_argument('--relocate', action='store_true', help='Allocate a new raw-image span while retaining the live stage-1 heap')
+parser.add_argument('--t6050-run-base', action='store_true',
+                    help='Stage raw Aura above J716c CTXR_D, then execute at the live Stage 1 base')
 parser.add_argument('payload', type=pathlib.Path)
 parser.add_argument('boot_args', default=[], nargs="*")
 args = parser.parse_args()
@@ -23,6 +31,18 @@ if args.vector_only and args.call:
     parser.error('--vector-only cannot be combined with --call')
 if args.capture and not args.vector_only:
     parser.error('--capture requires --vector-only')
+if args.t6050_run_base:
+    if not (args.raw and args.relocate and args.vector_only) or args.xnu or args.no_sepfw:
+        parser.error('--t6050-run-base requires --raw --relocate --vector-only and preserved SEPFW')
+    if args.entry_point != RAW_ENTRY:
+        parser.error('--t6050-run-base requires the default raw Aura entry point')
+    image = bytearray(args.payload.read_bytes())
+    if len(image) < LOAD_HEADER_OFFSET + LOAD_HEADER.size:
+        parser.error('Truncated AURALOAD header')
+    magic, version, flags, footprint, run_base = LOAD_HEADER.unpack_from(image, LOAD_HEADER_OFFSET)
+    if ((magic, version, flags, run_base) != (b'AURALOAD', 1, 1, 0) or
+            not PAGE_SIZE <= footprint <= len(image) or footprint % PAGE_SIZE):
+        parser.error('Invalid or prepatched AURALOAD run_base header')
 
 from aura.setup import *
 from aura.tgtypes import BootArgs_r1, BootArgs_r2, BootArgs_r3
@@ -30,6 +50,120 @@ from aura.macho import MachO
 from aura import asm
 from aura.bootmem import BOOT_BLOBS, find_boot_blobs, copy_boot_blobs
 from construct import Array, Int64ul
+
+
+def make_bootargs(top):
+    tba = u.ba.copy()
+    tba.top_of_kernel_data = top
+    if args.boot_args:
+        boot_args = " ".join(args.boot_args)
+        tba.video.display = int("-v" not in boot_args.split())
+        print(f"Setting boot arguments to {boot_args!r}")
+        tba.cmdline = boot_args
+    return tba
+
+
+def vector(entry, *stage_args):
+    print(f"Vectoring to 0x{entry:x}; no next-stage proxy request will be sent")
+    p.request(p.P_VECTOR, entry, *stage_args)
+    if args.capture:
+        deadline = time.monotonic() + max(0, args.capture_seconds)
+        with args.capture.open('wb') as output:
+            while time.monotonic() < deadline:
+                data = iface.dev.read(4096)
+                if data:
+                    output.write(data)
+    sys.exit(0)
+
+
+def stage_t6050(image, footprint):
+    chosen = u.adt["/chosen"]
+    if (p.get_chipid(), chosen.chip_id, chosen.board_id, u.adt.model, u.adt.target_type) != (
+            0x6050, 0x6050, 0xe, "Mac17,6", "J716c"):
+        raise ValueError("T6050 run_base staging requires Mac17,6 / J716c")
+    if u.mrs("CurrentEL") != 8 or u.ba.revision != 3:
+        raise ValueError("T6050 run_base staging requires EL2 and revision 3 BootArgs")
+    # The next image replaces Stage 1 at its original reset address. A live secondary
+    # could still execute the original image, so leave cold CPUs and their RVBARs alone.
+    if any(p.smp_is_alive(cpu.cpu_id) for cpu in u.adt["cpus"] if cpu.state != "running"):
+        raise ValueError("T6050 run_base staging requires all secondaries to be parked in reset")
+
+    ba = u.ba
+    ram_end = ba.phys_base + ba.mem_size
+    base = u.base
+    lower = u.mrs("CTXR_D_LWR_EL1")
+    upper = u.mrs("CTXR_D_UPR_EL1")
+    armed_end = (upper + 0x1000) & -PAGE_SIZE
+    # Match ctxr_exec_find_window() in src/ctxr_exec.c.
+    window_start = align(base + 0x1000000, 0x200000)
+    window_end = window_start + 0x8000000
+    if ((lower | upper) & 0xfff or base % PAGE_SIZE or
+            not 0 < ba.phys_base <= lower <= base < base + footprint <= window_start or
+            not window_end <= armed_end <= ba.top_of_kernel_data < ram_end < (1 << 64)):
+        raise ValueError("Inherited T6050 CTXR_D range cannot hold Aura and the Linux window")
+
+    adt_addr = ba.devtree - ba.virt_base + ba.phys_base
+    if not (ba.phys_base <= adt_addr < adt_addr + ba.devtree_size <= base):
+        raise ValueError("Inherited ADT is outside the protected area below Stage 1")
+    mm = chosen["memory-map"]
+    blobs, bootargs_off = find_boot_blobs(mm._properties, BOOT_BLOBS, 0)
+    if not any(name == "SEPFW" for name, _, _, _ in blobs):
+        raise ValueError("Inherited ADT has no SEPFW to preserve")
+    for name, src, size, _ in blobs:
+        if not ba.phys_base <= src < src + size <= ba.top_of_kernel_data:
+            raise ValueError(f"Inherited {name} is outside the firmware RAM span")
+
+    image.extend(b"\0" * 4)
+    image_size = align(len(image))
+    fw_size = bootargs_off + PAGE_SIZE
+    packed_size = image_size + fw_size
+    live_heap = p.heapblock_alloc(0)
+    limit = min(u.heap_base, ram_end)
+    if not ba.top_of_kernel_data <= live_heap <= limit:
+        raise ValueError("Invalid Stage 1 heap bounds")
+    if align(live_heap) + packed_size + PAGE_SIZE > limit:
+        raise MemoryError("Stage 1 heap has insufficient room for the staged raw payload")
+
+    staged = p.memalign(PAGE_SIZE, packed_size)
+    staged_end = staged + packed_size
+    if staged % PAGE_SIZE or not live_heap <= staged < staged_end <= limit:
+        raise ValueError("Allocated T6050 staging span is outside the checked heap bounds")
+    fw_base = staged + image_size
+    bootargs_addr = fw_base + bootargs_off
+    tba = BootArgs_r3.build(make_bootargs(staged_end))
+
+    for name, _, size, off in blobs:
+        mm._properties[name] = (fw_base + off, size)
+        mm._types[name] = (Array(2, Int64ul), False)
+    mm.BootArgs = (bootargs_addr, PAGE_SIZE)
+    mm._types["BootArgs"] = (Array(2, Int64ul), False)
+    adt = u.adt.build()
+    if not 0 < len(adt) <= ba.devtree_size:
+        raise ValueError("Updated ADT no longer fits in its inherited span")
+
+    struct.pack_into("<Q", image, RUN_BASE_OFFSET, base)
+    print(f"T6050 staging: raw [0x{staged:x}, 0x{staged + len(image):x}), "
+          f"BootArgs 0x{bootargs_addr:x}, run_base 0x{base:x}")
+    print(f"T6050 Linux window: [0x{window_start:x}, 0x{window_end:x})")
+    u.compressed_writemem(staged, image, True)
+    copy_boot_blobs(p, [(name, src, size, fw_base + off) for name, src, size, off in blobs])
+    iface.writemem(bootargs_addr, tba)
+    p.dc_cvac(staged, packed_size)
+    p.ic_ivau(staged, footprint)
+    header = image[LOAD_HEADER_OFFSET:LOAD_HEADER_OFFSET + LOAD_HEADER.size]
+    if iface.readmem(staged + LOAD_HEADER_OFFSET, len(header)) != header:
+        raise ValueError("Staged AURALOAD header did not verify")
+    if iface.readmem(bootargs_addr, len(tba)) != tba:
+        raise ValueError("Staged BootArgs did not verify")
+    iface.writemem(adt_addr, adt)
+    p.dc_cvac(adt_addr, len(adt))
+    if args.quiet:
+        p.iodev_set_usage(IODEV.FB, 0)
+    vector(staged + RAW_ENTRY, bootargs_addr)
+
+
+if args.t6050_run_base:
+    stage_t6050(image, footprint)
 
 new_base = u.base
 
@@ -164,18 +298,7 @@ if rvbar != u.base:
 u.push_adt()
 
 print("Setting up bootargs...")
-tba = u.ba.copy()
-
-tba.top_of_kernel_data = max(image_end, fw_dest + fw_size, live_heap, inherited_top, ro_end)
-
-if len(args.boot_args) > 0:
-    boot_args = " ".join(args.boot_args)
-    if "-v" in boot_args.split():
-        tba.video.display = 0
-    else:
-        tba.video.display = 1
-    print(f"Setting boot arguments to {boot_args!r}")
-    tba.cmdline = boot_args
+tba = make_bootargs(max(image_end, fw_dest + fw_size, live_heap, inherited_top, ro_end))
 
 if args.xnu:
     # Fix virt_base, since we often install aura with it set to 0 which xnu does not like
@@ -244,16 +367,7 @@ if args.call:
     print(f"Jumping to stub at 0x{stub.addr:x}")
     p.call(stub.addr, fw_dest + bootargs_off, image_addr, new_base, copy_size, reboot=True)
 elif args.vector_only:
-    print(f"Vectoring to 0x{stub.addr:x}; no next-stage proxy request will be sent")
-    p.request(p.P_VECTOR, stub.addr, fw_dest + bootargs_off, image_addr, new_base, copy_size)
-    if args.capture:
-        deadline = time.monotonic() + max(0, args.capture_seconds)
-        with args.capture.open('wb') as output:
-            while time.monotonic() < deadline:
-                data = iface.dev.read(4096)
-                if data:
-                    output.write(data)
-    sys.exit(0)
+    vector(stub.addr, fw_dest + bootargs_off, image_addr, new_base, copy_size)
 else:
     print(f"Reloading into stub at 0x{stub.addr:x}")
     p.reload(stub.addr, fw_dest + bootargs_off, image_addr, new_base, copy_size)
