@@ -500,6 +500,13 @@ enum cpufeat_uncore_version {
     UNCORE_V2,
 };
 
+/* One-byte CPU feature ABI; nonzero means init_cpu writes SIQ_CFG. */
+enum cpufeat_siq_cfg {
+    SIQ_CFG_KEEP = 0,
+    SIQ_CFG_ROUTE_2 = 1,
+    SIQ_CFG_ROUTE_0 = 2,
+};
+
 /* The proxy reads this layout (proxyclient/aura/proxy.py CPUFeatures). */
 struct midr_part_features {
     enum cpufeat_sleep_mode sleep_mode;
@@ -518,7 +525,7 @@ struct midr_part_features {
     bool nex_powergating;
     bool fast_ipi;
     bool mmu_sprr;
-    bool siq_cfg;
+    u8 siq_cfg; // enum cpufeat_siq_cfg
     bool amx;
     bool actlr_el2;
     bool counter_redirect;

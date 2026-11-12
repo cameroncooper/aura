@@ -1,0 +1,362 @@
+{
+  "schema_version": 1,
+  "updated_utc": "2026-11-12T04:26:17.766737+00:00",
+  "board": "J716c/T6050/M5 Max",
+  "scope": "Post-configuration real ACM10B notification; Aura USBfixed versus upstreamM5SIQroute0backport; sameUSB-Oz and Linuxcontroller8. IndependentSIQobserver beforeconfiguration; realnotificationrequirementunchanged. RAM only.",
+  "build": {
+    "Image_gz_sha256": "351e6a4d8fbe7f11b4a588c2338e77146ca4aa0f81a58acb6eae085f3f640b60",
+    "notes_sha256": "e394d39ac874345dc89fb6498d8cd32ee2d69311339389243609957982c38625",
+    "release": "7.3.0-j716c-usb2-fifo-field-probe",
+    "config_exact": true,
+    "generated_C_headers_exact": 66,
+    "rust_built_in_exact": true,
+    "no_build_warnings": true
+  },
+  "Aura_build": {
+    "control-aura.bin": {
+      "bytes": 4063232,
+      "sha256": "07594a9f9288493069664433df44f6364654e73d60478adebc0cf374b5216da3"
+    },
+    "control-Oz-aura.bin": {
+      "bytes": 4063232,
+      "sha256": "9e3e2b5820284b0a214aebaa98492944ff8935e93b8b53c35b222b66db57d31f"
+    },
+    "usb-Oz-aura.bin": {
+      "bytes": 4063232,
+      "sha256": "f07c7b81229494c4c06c5336aa0ea9e5ed6762b18966563f72367236b6b774f6"
+    },
+    "rebuilt_control_matches_frozen": true,
+    "Rust_archive_exact_between_rebuilt_pair": true,
+    "cfg_exact_to_frozen": true,
+    "same_narrow_USB_Oz_in_both": true,
+    "existing_DCP_limit_unchanged": true
+  },
+  "stage_pair": {
+    "Image_DT_initrd_notes_payload_observer_exact": true,
+    "cached_policy_both": 8,
+    "only_Aura_source_delta": [
+      "src/chickens.c",
+      "src/utils.h"
+    ],
+    "backported_from": "170e23f04a723f3635908c6a16e74f1fe9835d40",
+    "M5MIDR_entries": 4,
+    "one_byte_CPUfeature_ABI_preserved": true,
+    "upstream_USB_fixes_and_Oz_same_both": true,
+    "DCP_limit_unchanged": true,
+    "observer_source": "fa3bd0b119db1b4626c57ce795aa5a3af9be9410935af64a99d6490122bac855",
+    "observer_ko": "a3d9d7cbb2bbf23c92a98a4e23312b2d61e9fab0691bf02b7366d83eb46a7623",
+    "no_AIC_kernel_patch_yet": true
+  },
+  "cases": [
+    {
+      "label": "USB_fixed",
+      "profile": "control",
+      "cached_policy": 8,
+      "hardware_interval_field": 8,
+      "notification_FIFO": 2,
+      "controller_notification_MPS": 10,
+      "descriptor_MPS": 10,
+      "first_configuration": {
+        "request": {
+          "bmRequestType": "00",
+          "bRequest": "09",
+          "wValue": "0001",
+          "wIndex": "0000",
+          "wLength": "0000"
+        },
+        "completions": [
+          {
+            "event": "C",
+            "status": 0,
+            "actual_length": 0
+          }
+        ]
+      },
+      "hostTTY_activation_controls_completed": true,
+      "skip_zero_admitted": true,
+      "notification_queues_before_open_authorization": 0,
+      "targetTTY_opened_and_held": true,
+      "hostTTY_opened_and_held": true,
+      "hostTTY_closed_only_after_baseline": true,
+      "scoped_host_rule_cleanup": true,
+      "notification_counts": {
+        "ep_queue": 1,
+        "prepare_trb": 1
+      },
+      "notification_request_states": [
+        {
+          "kind": "ep_queue",
+          "actual": 0,
+          "length": 10,
+          "status": -115
+        }
+      ],
+      "notification_TRB_ctrl": {
+        "00000813": 1
+      },
+      "notification_commands": {
+        "Set Endpoint Configuration:Successful": 1,
+        "Set Endpoint Transfer Resource:Successful": 1,
+        "Start Transfer:Successful": 1
+      },
+      "notification_events": {},
+      "endpoint_configuration": [
+        {
+          "endpoint": "ep2in",
+          "params": [
+            "00040056",
+            "0a080300",
+            "00000000"
+          ],
+          "status": "Successful"
+        },
+        {
+          "endpoint": "ep1in",
+          "params": [
+            "00021004",
+            "06000300",
+            "00000000"
+          ],
+          "status": "Successful"
+        },
+        {
+          "endpoint": "ep1out",
+          "params": [
+            "00001004",
+            "04000200",
+            "00000000"
+          ],
+          "status": "Successful"
+        }
+      ],
+      "host_interrupt_submissions": 1,
+      "host_real10B_notification_completions": 0,
+      "host_capture": {
+        "type": "end",
+        "control_events": 22,
+        "input_headers": 9223,
+        "complete": true,
+        "final_drain_seconds": 0.0006108637899160385,
+        "cutoff_policy": "requested duration then bounded1s drain to one empty-queue snapshot; arrivals after that snapshot outside window",
+        "incomplete_reasons": [],
+        "dropped_total": 0,
+        "clock_offset_max_observed_delta_ns": 3459,
+        "clock_observation": "sampled250ms; not continuous",
+        "pending_authenticated_urbs": 0,
+        "invalidated_authenticated_urbs": 0,
+        "bulk_pending_in": 16,
+        "bulk_pending_out": 0,
+        "interrupt_pending": 1,
+        "bulk_orphan_completions": 0,
+        "pending_bulk_is_expected": "network links remain UP with receive URBs; not an error alone"
+      },
+      "target_trace": {
+        "cpu_count": 18,
+        "loss_errors": [],
+        "complete": true
+      },
+      "cached_notification_ring": {
+        "row_count": 256,
+        "active_data_TRBs": [
+          {
+            "index": 0,
+            "size": 10,
+            "type": "normal",
+            "ioc": 1,
+            "isp_imi": 0,
+            "csp": 0,
+            "chn": 0,
+            "lst": 1,
+            "hwo": 1
+          }
+        ],
+        "enqueue_indexes": [
+          1
+        ],
+        "dequeue_indexes": [
+          0
+        ],
+        "snapshot_duration_ns": 1276156,
+        "PM_reference_bracket_explicit": true
+      },
+      "new_kernel_fault_markers": [],
+      "target_observer_pass": false,
+      "physical_baseline_recovery": true,
+      "qualified": false,
+      "receipt_sha256": "4af76ee497ec1c8da8752c49cefde18fdc4bd5f803dc4dfa5f0e16bc48f8dc7c",
+      "target_archive_sha256": "9abf00c66a7e69b9e826804cf8c3b3b07ca2310063bf7506969a47fdd20ca4fa",
+      "raw_evidence_private": "build/usb2-eem-acm-aura-irq-control-run1-runtime"
+    },
+    {
+      "label": "M5_IRQ_route0",
+      "profile": "last",
+      "cached_policy": 8,
+      "hardware_interval_field": 8,
+      "notification_FIFO": 2,
+      "controller_notification_MPS": 10,
+      "descriptor_MPS": 10,
+      "first_configuration": {
+        "request": {
+          "bmRequestType": "00",
+          "bRequest": "09",
+          "wValue": "0001",
+          "wIndex": "0000",
+          "wLength": "0000"
+        },
+        "completions": [
+          {
+            "event": "C",
+            "status": 0,
+            "actual_length": 0
+          }
+        ]
+      },
+      "hostTTY_activation_controls_completed": true,
+      "skip_zero_admitted": true,
+      "notification_queues_before_open_authorization": 0,
+      "targetTTY_opened_and_held": true,
+      "hostTTY_opened_and_held": true,
+      "hostTTY_closed_only_after_baseline": true,
+      "scoped_host_rule_cleanup": true,
+      "notification_counts": {
+        "ep_queue": 1,
+        "prepare_trb": 1
+      },
+      "notification_request_states": [
+        {
+          "kind": "ep_queue",
+          "actual": 0,
+          "length": 10,
+          "status": -115
+        }
+      ],
+      "notification_TRB_ctrl": {
+        "00000813": 1
+      },
+      "notification_commands": {
+        "Set Endpoint Configuration:Successful": 1,
+        "Set Endpoint Transfer Resource:Successful": 1,
+        "Start Transfer:Successful": 1
+      },
+      "notification_events": {},
+      "endpoint_configuration": [
+        {
+          "endpoint": "ep2in",
+          "params": [
+            "00040056",
+            "0a080300",
+            "00000000"
+          ],
+          "status": "Successful"
+        },
+        {
+          "endpoint": "ep1in",
+          "params": [
+            "00021004",
+            "06000300",
+            "00000000"
+          ],
+          "status": "Successful"
+        },
+        {
+          "endpoint": "ep1out",
+          "params": [
+            "00001004",
+            "04000200",
+            "00000000"
+          ],
+          "status": "Successful"
+        }
+      ],
+      "host_interrupt_submissions": 1,
+      "host_real10B_notification_completions": 0,
+      "host_capture": {
+        "type": "end",
+        "control_events": 20,
+        "input_headers": 9207,
+        "complete": true,
+        "final_drain_seconds": 0.00016518495976924896,
+        "cutoff_policy": "requested duration then bounded1s drain to one empty-queue snapshot; arrivals after that snapshot outside window",
+        "incomplete_reasons": [],
+        "dropped_total": 0,
+        "clock_offset_max_observed_delta_ns": 3491,
+        "clock_observation": "sampled250ms; not continuous",
+        "pending_authenticated_urbs": 0,
+        "invalidated_authenticated_urbs": 0,
+        "bulk_pending_in": 16,
+        "bulk_pending_out": 0,
+        "interrupt_pending": 1,
+        "bulk_orphan_completions": 0,
+        "pending_bulk_is_expected": "network links remain UP with receive URBs; not an error alone"
+      },
+      "target_trace": {
+        "cpu_count": 18,
+        "loss_errors": [],
+        "complete": true
+      },
+      "cached_notification_ring": {
+        "row_count": 256,
+        "active_data_TRBs": [
+          {
+            "index": 0,
+            "size": 10,
+            "type": "normal",
+            "ioc": 1,
+            "isp_imi": 0,
+            "csp": 0,
+            "chn": 0,
+            "lst": 1,
+            "hwo": 1
+          }
+        ],
+        "enqueue_indexes": [
+          1
+        ],
+        "dequeue_indexes": [
+          0
+        ],
+        "snapshot_duration_ns": 1257263,
+        "PM_reference_bracket_explicit": true
+      },
+      "new_kernel_fault_markers": [],
+      "target_observer_pass": false,
+      "physical_baseline_recovery": true,
+      "qualified": false,
+      "receipt_sha256": "989f4fa546766413586c59edb4344f82cc0231ce66309563bc2814e08d4af6a7",
+      "target_archive_sha256": "5e4b89f5962b39da658c6bb14bd528302a0f9f321035f376b4dc0fe0ec0d2888",
+      "raw_evidence_private": "build/usb2-eem-acm-aura-irq-last-run1-runtime"
+    }
+  ],
+  "observed_endpoint_parameter_xor": [
+    {
+      "endpoint": "ep2in",
+      "parameter_xor": [
+        "0x0",
+        "0x0",
+        "0x0"
+      ]
+    },
+    {
+      "endpoint": "ep1in",
+      "parameter_xor": [
+        "0x0",
+        "0x0",
+        "0x0"
+      ]
+    },
+    {
+      "endpoint": "ep1out",
+      "parameter_xor": [
+        "0x0",
+        "0x0",
+        "0x0"
+      ]
+    }
+  ],
+  "limits": [
+    "Finite single-unit/cable experiment. First configuration and host activation are partial successes; no serial payload or sustained/persistent qualification.",
+    "Both target and host TTY FDs remain held until physical watchdog recovery; no early close/unbind/unload or post-loader software reset.",
+    "Cached coherent-RAM ring read explicitly takes/releases a runtime-PM reference after failed outcome, guarded active before/after; no selector or register file opened.",
+    "No SSD/ESP/install/enrollment/boot-policy writes. Raw pointers/DMA addresses/identities remain private."
+  ]
+}

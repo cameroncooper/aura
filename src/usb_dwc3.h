@@ -17,6 +17,8 @@ typedef enum _cdc_acm_pipe_id_t {
 dwc3_dev_t *usb_dwc3_init(uintptr_t regs, dart_dev_t *dart);
 dwc3_dev_t *usb_dwc3_init_mode(uintptr_t regs, dart_dev_t *dart, bool superspeed);
 void usb_dwc3_shutdown(dwc3_dev_t *dev);
+int usb_dwc3_shutdown_checked(dwc3_dev_t *dev);
+bool usb_dwc3_managed_usb2(dwc3_dev_t *dev, uintptr_t regs, uintptr_t dart, u8 sid);
 
 void usb_dwc3_handle_events(dwc3_dev_t *dev);
 

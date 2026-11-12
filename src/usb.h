@@ -16,6 +16,9 @@ void usb_iodev_shutdown(void);
 void usb_iodev_vuart_setup(iodev_id_t iodev);
 int usb_cdc_link_start(void (*set_step)(unsigned step), bool force_swapped);
 bool usb_cdc_deferred_usb2(void);
+int usb_t6050_retire_for_kernel(void);
+int usb_t6050_snapshot_pmgr(char *out, size_t size);
+int usb_t6050_snapshot_state(char *out, size_t size);
 
 dwc3_dev_t *usb_t8152_init(void (*set_step)(unsigned step));
 

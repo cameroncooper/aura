@@ -1,0 +1,20 @@
+{
+  "source_base": "bd9f3e8273dc79ae9095c19c2c4f32218446ad4e",
+  "published_parent": "9da61857f9d9262bd64c023fbc1b18315b12d0af",
+  "exact_source_file_count": 838,
+  "source_tree_digest": "26e2351871c4657b946a3ddc6a162933841af85521529b713ab20b7353bd2a8e",
+  "raw_sha256": "bbc4a007acb43e0afecd01847d0cf034d00bc9b660a804dfe60a1895749cdfe3",
+  "raw_bytes": 4063232,
+  "USB_fixes": [
+    "a136855d340a5afa94b1565068d6f47835168133",
+    "bdc0e09f33fb45ed89abea964582a51fd2f79501"
+  ],
+  "M5_SIQ_backport": "170e23f04a723f3635908c6a16e74f1fe9835d40",
+  "backport_scope": "existingfourM5Pro/MaxMIDRentries only;onebyteABI",
+  "USB_Oz_same_in_control_and_candidate": true,
+  "DCP_vital_limit_unchanged": "0x120000",
+  "observed_vital_end": "0x11b878",
+  "Rust_archive_unchanged": true,
+  "whole_latest_Aura_not_imported": true,
+  "no_NVRAM_or_bootpolicy_source_change_imported": true
+}
