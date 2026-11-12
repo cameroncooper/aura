@@ -346,10 +346,15 @@ static int usb_t6050_sid1_state(u32 tcr[16], u32 ttbr[16], bool compare)
     return 0;
 }
 
+/* One-shot proof of the stopped DWC device before full wrapper reset. The
+ * optional second-bank path must not read the DWC through asserted reset. */
+static bool usb_t6050_retired_receipt;
+
 /* Exact inherited no-object path observed by read-only mode5. No ownership
  * receipt is inferred from a previous loader, an idle TLB, or a missing object. */
 int usb_t6050_retire_for_kernel(void)
 {
+    usb_t6050_retired_receipt = false;
     struct usb_t6050_regs regs;
     if (chip_id != T6050 || usb_t6050_get_regs(&regs) ||
         regs.phy != 0x2a2a90000ULL || regs.phy_size != 0x4000 ||
@@ -397,6 +402,108 @@ int usb_t6050_retire_for_kernel(void)
         (read32(regs.pipe + PIPEHANDLER_AON_GEN) & 0x11) != 0x10)
         return -1;
     printf("USB0: inherited device reset/clamped; SID1 blocked and flush complete; foreign streams retained\n");
+    usb_t6050_retired_receipt = true;
+    return 0;
+}
+
+#define USB0_DART0 0x2a2f00000ULL
+#define USB0_DUAL_FN __attribute__((minsize, noinline, section(".init.usb0_dual")))
+struct usb_t6050_bank0_state {
+    u32 params[4], masks[4];
+    u32 tcr[16], ttbr[16];
+};
+
+/* Validate this exact layout before reading any version-specific window.
+ * Raw roots are private comparison data and never become diagnostics. */
+static USB0_DUAL_FN int usb_t6050_bank0_state(struct usb_t6050_bank0_state *saved, bool compare)
+{
+    u32 params[4];
+    for (unsigned i = 0; i < 4; i++)
+        params[i] = read32(USB0_DART0 + 4 * i);
+    unsigned reads = (params[1] >> 16) & 7, writes = (params[1] >> 20) & 7;
+    unsigned ports = reads > writes ? reads : writes;
+    if (((params[0] >> 24) & 0xf) != 14 || (params[2] & 0xffff) != 0x0204 ||
+        ((params[2] >> 16) & 0x3f) != 42 || ((params[2] >> 24) & 0x3f) != 42 ||
+        (params[3] & 0x1ff) != 16 || ports < 1 || ports > 4)
+        return -1;
+    for (unsigned i = 0; i < 4; i++) {
+        if (compare && params[i] != saved->params[i])
+            return -1;
+        if (!compare)
+            saved->params[i] = params[i];
+    }
+    if (read32(USB0_DART0 + 0x200) || read32(USB0_DART0 + 0x208) ||
+        read32(USB0_DART0 + 0xc00) || poll32(USB0_DART0 + 0x80, BIT(31), 0, 1000))
+        return -1;
+    static const u32 masks[] = {0x104, 0x4060, 0x4200, 0x4220};
+    for (unsigned i = 0; i < 4; i++) {
+        u32 mask = read32(USB0_DART0 + masks[i]);
+        if (mask || (compare && mask != saved->masks[i]))
+            return -1;
+        if (!compare)
+            saved->masks[i] = mask;
+    }
+    for (unsigned sid = 0; sid < 16; sid++) {
+        u32 control = read32(USB0_DART0 + 0x1000 + 4 * sid);
+        u32 root = read32(USB0_DART0 + 0x1400 + 4 * sid);
+        if ((control != 0 && control != 1 && control != 6) || (root & 1) ||
+            (compare && (sid ? control != saved->tcr[sid] || root != saved->ttbr[sid]
+                             : control || root)))
+            return -1;
+        if (!compare) {
+            saved->tcr[sid] = control;
+            saved->ttbr[sid] = root;
+        }
+    }
+    for (unsigned port = 0; port < ports; port++)
+        if (poll32(USB0_DART0 + 0x230 + 4 * port, ~0U, 0, 1000))
+            return -1;
+    /* Check faults after draining: a fault may have latched during the wait.
+     * 16 implemented SIDs occupy one bitmap word. No fault address is read,
+     * and no status is acknowledged. */
+    if (read32(USB0_DART0 + 0x100) || read32(USB0_DART0 + 0x1c0) ||
+        read32(USB0_DART0 + 0x4000) || (read32(USB0_DART0 + 0x704) & 0x777) ||
+        read32(USB0_DART0 + 0x4204))
+        return -1;
+    return 0;
+}
+
+USB0_DUAL_FN int usb_t6050_retire_bank0_for_kernel(void)
+{
+    bool retired = usb_t6050_retired_receipt;
+    usb_t6050_retired_receipt = false;
+    struct usb_t6050_regs regs;
+    int trace[8];
+    u64 base, size;
+    if (!retired || chip_id != T6050 || usb_t6050_get_regs(&regs) ||
+        regs.phy != 0x2a2a90000ULL || regs.phy_size != 0x4000 ||
+        regs.digital != 0x2a2800000ULL || regs.pipe != 0x2a2a84000ULL ||
+        regs.pipe_size != 0x4000 || regs.dwc != 0x2a2280000ULL ||
+        adt_path_offset_trace(adt, "/arm-io/dart-usb0", trace) < 0 ||
+        adt_get_reg(adt, trace, "reg", 0, &base, &size) ||
+        base != USB0_DART0 || size != 0xc000 || !usb_t6050_power_ready() ||
+        (read32(regs.pipe + PIPEHANDLER_MUX_CTRL) & 0x73) != 0x42 ||
+        (read32(regs.pipe + PIPEHANDLER_AON_GEN) & 0x11) != 0x10)
+        return -1;
+    struct usb_t6050_bank0_state saved;
+    if (usb_t6050_bank0_state(&saved, false))
+        return -1;
+    /* Own SID0 only. Full producer reset precedes these writes; no global
+     * flush/unlock, mask, enable, foreign-stream or fault-ACK write exists. */
+    write32(USB0_DART0 + 0x1000, 0);
+    write32(USB0_DART0 + 0x1400, 0);
+    if (read32(USB0_DART0 + 0x1000) || read32(USB0_DART0 + 0x1400))
+        return -1;
+    dma_wmb();
+    write32(USB0_DART0 + 0x80, 0x100); /* legacy FLUSH_SID(0) */
+    if (poll32(USB0_DART0 + 0x80, BIT(31), 0, 1000))
+        return -1;
+    dma_rmb();
+    if (usb_t6050_bank0_state(&saved, true) || !usb_t6050_power_ready() ||
+        (read32(regs.pipe + PIPEHANDLER_MUX_CTRL) & 0x73) != 0x42 ||
+        (read32(regs.pipe + PIPEHANDLER_AON_GEN) & 0x11) != 0x10)
+        return -1;
+    printf("USB0: SID0 blocked/rootless; flush complete under full wrapper reset; foreign streams retained\n");
     return 0;
 }
 
